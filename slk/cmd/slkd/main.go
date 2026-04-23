@@ -113,6 +113,7 @@ func main() {
 	// ── CRITICAL: Balance comes from UTXO only, never from wallet file ──
 	realBalance := bc.UTXOSet.GetTotalBalance(myWallet.Address)
 	myWallet.SyncBalance(realBalance)
+	myWallet.Save(walletPath)
 	fmt.Printf("💰 Real Balance (from UTXO): %.8f SLK\n", myWallet.Balance)
 
 	// ONE global input reader — runs forever
