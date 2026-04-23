@@ -1129,6 +1129,10 @@ retry:
 		FromTrophy:  bc.Height,
 		Spent:       false,
 	})
+	// CRITICAL: Save UTXO to disk immediately — sender spent, receiver credited
+	bc.UTXOSet.Save()
+	myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
+	myWallet.Save(walletPath)
 	fmt.Printf("💸 UTXO created for receiver: %.8f SLK → %s\n", amount, receiver)
 
 	// Add to mempool
