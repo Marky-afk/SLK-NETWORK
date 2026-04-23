@@ -1132,13 +1132,12 @@ retry:
 	myWallet.Save(walletPath)
 
 	// Deduct from sender — mark UTXOs as spent
-	myWallet.Balance -= amount
 	senderUTXOs := bc.UTXOSet.GetUnspentForAddress(myWallet.Address)
-	remaining := amount
+	totalSpent := 0.0
 	for _, utxo := range senderUTXOs {
-		if remaining <= 0 { break }
+		if totalSpent >= amount { break }
 		bc.UTXOSet.SpendUTXO(utxo.TxID, utxo.OutputIndex, tx.ID)
-		remaining -= utxo.Amount
+		totalSpent += utxo.Amount
 	}
 
 	// Credit receiver UTXO immediately — no claiming needed
@@ -1150,7 +1149,20 @@ retry:
 		FromTrophy:  bc.Height,
 		Spent:       false,
 	})
-	// CRITICAL: Save UTXO to disk immediately — sender spent, receiver credited
+	// Change output — send leftover back to sender
+	change := totalSpent - amount
+	if change > 0.000000001 {
+		bc.UTXOSet.AddUTXO(&state.UTXO{
+			TxID:        tx.ID,
+			OutputIndex: 1,
+			Amount:      change,
+			Address:     myWallet.Address,
+			FromTrophy:  bc.Height,
+			Spent:       false,
+		})
+		fmt.Printf("💱 Change: %.8f SLK returned to you\n", change)
+	}
+	// CRITICAL: Save UTXO to disk immediately
 	bc.UTXOSet.Save()
 	myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
 	myWallet.Save(walletPath)
