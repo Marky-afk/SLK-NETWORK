@@ -1262,14 +1262,10 @@ func checkIncomingTransactions() {
 	fmt.Println("\n╔══════════════════════════════════════════════════╗")
 	fmt.Println("║         📥 CHECK INCOMING TRANSACTIONS           ║")
 	fmt.Println("╚══════════════════════════════════════════════════╝")
-	fmt.Print("\n📬 Enter YOUR wallet address to check: ")
-	// scan via inputChan
-	address := strings.TrimSpace(<-inputChan)
 
-	if !strings.HasPrefix(address, "SLK-") {
-		fmt.Println("❌ Invalid address!")
-		return
-	}
+	// Auto-use your own wallet address — no need to type it
+	address := myWallet.Address
+	fmt.Printf("\n📬 Checking incoming SLK for: %s\n", address)
 
 	pending := wallet.GetPendingForAddress(address)
 	if len(pending) == 0 {
@@ -1329,6 +1325,7 @@ func checkIncomingTransactions() {
 		myWallet.Balance += selectedTx.Amount
 		wallet.UpdatePendingTransaction(selectedTx.ID, "claimed")
 		wallet.SaveConfirmedTransaction(selectedTx)
+		myWallet.Save(walletPath)
 
 		fmt.Println("\n╔══════════════════════════════════════════════════╗")
 		fmt.Println("║           ✅ SLK CLAIMED SUCCESSFULLY!            ║")

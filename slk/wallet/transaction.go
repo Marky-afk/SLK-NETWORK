@@ -44,11 +44,15 @@ type PendingTransaction struct {
 	CreatedAt   int64       `json:"created_at"`
 }
 
-const txFile = "/home/michael-faraday/Desktop/slk/data/transactions.json"
-const pendingFile = "/home/michael-faraday/Desktop/slk/data/pending_tx.json"
+var txFile = ""
+var pendingFile = ""
 
 func init() {
-	os.MkdirAll("/home/michael-faraday/Desktop/slk/data", 0700)
+	home, _ := os.UserHomeDir()
+	dir := home + "/.slk/data"
+	os.MkdirAll(dir, 0700)
+	txFile = dir + "/transactions.json"
+	pendingFile = dir + "/pending_tx.json"
 }
 
 // GenerateSecretCode generates a cryptographically secure 8-char code
