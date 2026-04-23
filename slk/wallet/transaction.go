@@ -139,7 +139,8 @@ func GetPendingForAddress(address string) []Transaction {
 
 	var result []Transaction
 	for _, p := range pending {
-		if p.Transaction.To == address && p.Transaction.Status == "pending" {
+		if p.Transaction.To == address &&
+			(p.Transaction.Status == "pending" || p.Transaction.Status == "confirmed") {
 			result = append(result, p.Transaction)
 		}
 	}

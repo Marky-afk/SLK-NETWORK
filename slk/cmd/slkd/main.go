@@ -198,6 +198,7 @@ func main() {
 
 	p2pNode.OnTx = func(tx p2p.TxMsg) {
 		// Save to disk so receiver keeps TX even after restart
+		// Always force "pending" so receiver can claim it via option [6]
 		wallet.SavePendingTransaction(wallet.Transaction{
 			ID:         tx.ID,
 			Type:       tx.Type,
@@ -1081,8 +1082,26 @@ retry:
 	myWallet.RotatePrivateKey()
 	myWallet.Save(walletPath)
 
-	// Deduct from sender
+	// Deduct from sender — mark UTXOs as spent
 	myWallet.Balance -= amount
+	senderUTXOs := bc.UTXOSet.GetUnspentForAddress(myWallet.Address)
+	remaining := amount
+	for _, utxo := range senderUTXOs {
+		if remaining <= 0 { break }
+		bc.UTXOSet.SpendUTXO(utxo.TxID, utxo.OutputIndex, tx.ID)
+		remaining -= utxo.Amount
+	}
+
+	// Credit receiver UTXO immediately — no claiming needed
+	bc.UTXOSet.AddUTXO(&state.UTXO{
+		TxID:        tx.ID,
+		OutputIndex: 0,
+		Amount:      amount,
+		Address:     receiver,
+		FromTrophy:  bc.Height,
+		Spent:       false,
+	})
+	fmt.Printf("💸 UTXO created for receiver: %.8f SLK → %s\n", amount, receiver)
 
 	// Add to mempool
 	mempool.Add(&state.MempoolTx{
@@ -1111,10 +1130,11 @@ retry:
 		fmt.Printf("📡 TX broadcast to %d peers!\n", p2pNode.PeerCount)
 	}
 
-	// Save transaction
+	// Save transaction as confirmed — UTXO already updated above
 	tx.Status = "confirmed"
 	wallet.SaveConfirmedTransaction(tx)
-	wallet.SavePendingTransaction(tx)
+	// Clear from mempool immediately
+	mempool.Remove(tx.ID)
 
 	fmt.Println("\n╔══════════════════════════════════════════════════╗")
 	fmt.Println("║           ✅ TRANSACTION CONFIRMED!               ║")
@@ -1317,19 +1337,49 @@ func checkIncomingTransactions() {
 
 	// Standard tx - signature already verified, just claim it
 	if selectedTx.Type == wallet.TxStandard {
-		myWallet.Balance += selectedTx.Amount
-		bc.UTXOSet.AddUTXO(&state.UTXO{
-			TxID:        selectedTx.ID,
-			OutputIndex: 0,
-			Amount:      selectedTx.Amount,
-			Address:     myWallet.Address,
-			FromTrophy:  bc.Height,
-			Spent:       false,
-		})
+		// Check if UTXO already exists (sender credited it while we were online)
+		existingUTXOs := bc.UTXOSet.GetUnspentForAddress(myWallet.Address)
+		alreadyCredited := false
+		for _, u := range existingUTXOs {
+			if u.TxID == selectedTx.ID {
+				alreadyCredited = true
+				break
+			}
+		}
+		if !alreadyCredited {
+			// Receiver was offline when TX was sent — create UTXO now
+			bc.UTXOSet.AddUTXO(&state.UTXO{
+				TxID:        selectedTx.ID,
+				OutputIndex: 0,
+				Amount:      selectedTx.Amount,
+				Address:     myWallet.Address,
+				FromTrophy:  bc.Height,
+				Spent:       false,
+			})
+			fmt.Printf("💸 UTXO created from missed TX: %.8f SLK\n", selectedTx.Amount)
+		} else {
+			fmt.Printf("✅ UTXO already exists — syncing balance\n")
+		}
+		// Always sync balance from UTXO — single source of truth
+		myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
 		wallet.UpdatePendingTransaction(selectedTx.ID, "claimed")
 		wallet.SaveConfirmedTransaction(selectedTx)
 		mempool.Remove(selectedTx.ID)
 		myWallet.Save(walletPath)
+		// Broadcast claim to all peers so network knows TX is settled
+		if p2pNode != nil {
+			p2pNode.BroadcastTx(p2p.TxMsg{
+				ID:        selectedTx.ID,
+				From:      selectedTx.From,
+				To:        selectedTx.To,
+				Amount:    selectedTx.Amount,
+				Timestamp: selectedTx.Timestamp,
+				Signature: selectedTx.Signature,
+				PubKey:    selectedTx.FromPubKey,
+				Type:      selectedTx.Type,
+			})
+			fmt.Printf("📡 Claim broadcast to %d peers!\n", p2pNode.PeerCount)
+		}
 
 		fmt.Println("\n╔══════════════════════════════════════════════════╗")
 		fmt.Println("║           ✅ SLK CLAIMED SUCCESSFULLY!            ║")

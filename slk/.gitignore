@@ -1,0 +1,8 @@
+# Binary outputs only
+/slkd
+*.exe
+*.o
+*.a
+*.so
+*.test
+*.log
