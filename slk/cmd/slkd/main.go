@@ -478,7 +478,13 @@ func showMenu() {
 	for {
 		fmt.Println()
 		fmt.Println("╔══════════════════════════════════════════╗")
-		fmt.Printf("║  Trophies Won: %-4d | SLK: %.8f  ║\n", bc.Height, myWallet.Balance)
+		myTrophies := 0
+		for _, t := range bc.Trophies {
+			if t.Winner == myWallet.Address {
+				myTrophies++
+			}
+		}
+		fmt.Printf("║  Trophies Won: %-4d | SLK: %.8f  ║\n", myTrophies, myWallet.Balance)
 		fmt.Printf("║  Mempool: %-3d pending txs                       ║\n", mempool.Size())
 		fmt.Println("╠══════════════════════════════════════════╣")
 		fmt.Println("║  [1] Start Racing (auto-continues)       ║")
@@ -1309,26 +1315,12 @@ func checkIncomingTransactions() {
 	}
 	fmt.Println("✅ Transaction signature verified with sender's public key!")
 
-	// Standard tx - just need private key
+	// Standard tx - signature already verified, just claim it
 	if selectedTx.Type == wallet.TxStandard {
-		fmt.Print("\n🔑 Enter YOUR private key to claim: ")
-		// scan via inputChan
-		privKeyHex := strings.TrimSpace(<-inputChan)
-
-		privKey, err := hex.DecodeString(privKeyHex)
-		if err != nil || len(privKey) != 64 {
-			fmt.Println("❌ Invalid private key!")
-			return
-		}
-
-		if hex.EncodeToString(myWallet.PrivateKey) != privKeyHex {
-			fmt.Println("❌ Private key does not match your wallet!")
-			return
-		}
-
 		myWallet.Balance += selectedTx.Amount
 		wallet.UpdatePendingTransaction(selectedTx.ID, "claimed")
 		wallet.SaveConfirmedTransaction(selectedTx)
+		mempool.Remove(selectedTx.ID)
 		myWallet.Save(walletPath)
 
 		fmt.Println("\n╔══════════════════════════════════════════════════╗")
@@ -1371,6 +1363,8 @@ func checkIncomingTransactions() {
 				myWallet.Balance += selectedTx.Amount
 				wallet.UpdatePendingTransaction(selectedTx.ID, "claimed")
 				wallet.SaveConfirmedTransaction(selectedTx)
+				mempool.Remove(selectedTx.ID)
+				myWallet.Save(walletPath)
 
 				fmt.Println("\n╔══════════════════════════════════════════════════╗")
 				fmt.Println("║        ✅ INDEPENDENT TX CLAIMED!                ║")
