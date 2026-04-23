@@ -34,6 +34,8 @@ var BootstrapPeers = []string{
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+	// SLK Genesis Node - FANKLIN-MOZACK
+	"/ip4/192.168.100.25/tcp/30303/p2p/12D3KooWGVqFrHPc6hQ3k2xJtwoQCjFxkvZrFWux845UCzErfy4R",
 }
 
 type TrophyMsg struct {
