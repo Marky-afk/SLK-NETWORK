@@ -253,7 +253,28 @@ func main() {
 		if err == nil {
 			fmt.Printf("\n📥 Incoming TX: %.8f SLK from %s\n", tx.Amount, tx.From[:min(16, len(tx.From))])
 			if tx.To == myWallet.Address {
-				fmt.Printf("💰 You received %.8f SLK! Check wallet for updated balance.\n", tx.Amount)
+				existing := bc.UTXOSet.GetUnspentForAddress(myWallet.Address)
+				alreadyCredited := false
+				for _, u := range existing {
+					if u.TxID == tx.ID {
+						alreadyCredited = true
+						break
+					}
+				}
+				if !alreadyCredited {
+					bc.UTXOSet.AddUTXO(&state.UTXO{
+						TxID:        tx.ID,
+						OutputIndex: 0,
+						Amount:      tx.Amount,
+						Address:     myWallet.Address,
+						FromTrophy:  bc.Height,
+						Spent:       false,
+					})
+					bc.UTXOSet.Save()
+				}
+				myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
+				myWallet.Save(walletPath)
+				fmt.Printf("💰 You received %.8f SLK! New balance: %.8f SLK\n", tx.Amount, myWallet.Balance)
 			}
 		}
 	}
