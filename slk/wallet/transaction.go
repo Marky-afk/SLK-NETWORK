@@ -83,12 +83,7 @@ func SignTransaction(tx *Transaction, w *Wallet) error {
 	tx.Signature = hex.EncodeToString(sig)
 	tx.FromPubKey = hex.EncodeToString(w.PublicKey)
 
-	// Rotate private key after use (as requested)
-	err = w.RotatePrivateKey()
-	if err != nil {
-		return fmt.Errorf("key rotation failed: %v", err)
-	}
-
+	// Key rotation happens AFTER verification in main.go
 	return nil
 }
 

@@ -1065,11 +1065,15 @@ retry:
 		return
 	}
 
-	// Verify signature
+	// Verify signature BEFORE rotating key
 	if !wallet.VerifyTransactionSignature(&tx) {
 		fmt.Println("❌ Signature verification failed! Transaction DENIED!")
 		return
 	}
+
+	// Rotate key AFTER successful verification
+	myWallet.RotatePrivateKey()
+	myWallet.Save(walletPath)
 
 	// Deduct from sender
 	myWallet.Balance -= amount
