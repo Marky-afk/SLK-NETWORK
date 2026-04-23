@@ -23,10 +23,9 @@ var chainPath = os.Getenv("HOME") + "/.slk/chain.json"
 func NewBlockchain() *Blockchain {
 	// Try to load existing chain first
 	if bc, err := loadChain(); err == nil {
-		// CRITICAL: always ensure UTXOSet is not nil after load
-		if bc.UTXOSet == nil {
-			bc.UTXOSet = state.LoadUTXOSet()
-		}
+		// CRITICAL: always load UTXOSet from utxo.json — it has ALL UTXOs including received TXs
+		// Never trust the embedded utxo_set in chain.json — it only has trophy UTXOs
+		bc.UTXOSet = state.LoadUTXOSet()
 		if bc.UTXOSet == nil {
 			bc.UTXOSet = state.NewUTXOSet()
 		}
