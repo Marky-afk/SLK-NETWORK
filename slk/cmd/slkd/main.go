@@ -197,6 +197,18 @@ func main() {
 	}
 
 	p2pNode.OnTx = func(tx p2p.TxMsg) {
+		// Save to disk so receiver keeps TX even after restart
+		wallet.SavePendingTransaction(wallet.Transaction{
+			ID:         tx.ID,
+			Type:       tx.Type,
+			From:       tx.From,
+			To:         tx.To,
+			Amount:     tx.Amount,
+			Timestamp:  tx.Timestamp,
+			Signature:  tx.Signature,
+			FromPubKey: tx.PubKey,
+			Status:     "pending",
+		})
 		err := mempool.Add(&state.MempoolTx{
 			ID:        tx.ID,
 			From:      tx.From,
@@ -210,7 +222,7 @@ func main() {
 		if err == nil {
 			fmt.Printf("\n📥 Incoming TX: %.8f SLK from %s\n", tx.Amount, tx.From[:min(16, len(tx.From))])
 			if tx.To == myWallet.Address {
-				myWallet.Balance += tx.Amount
+				fmt.Printf("💰 You received %.8f SLK! Use option [6] to claim it.\n", tx.Amount)
 				myWallet.Save(walletPath)
 				fmt.Printf("💰 Balance updated: %.8f SLK\n", myWallet.Balance)
 			}
@@ -947,7 +959,8 @@ retry:
 	receiver := strings.TrimSpace(<-inputChan)
 
 	// Validate address format
-	if !strings.HasPrefix(receiver, "SLK-") || len(receiver) < 20 {
+	receiver = strings.TrimSpace(receiver)
+	if !strings.HasPrefix(receiver, "SLK-") || len(receiver) < 15 {
 		fmt.Println("❌ INVALID wallet address! Must start with SLK- and be valid format!")
 		fmt.Println("   Try again...")
 		goto retry
