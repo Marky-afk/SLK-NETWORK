@@ -1318,6 +1318,14 @@ func checkIncomingTransactions() {
 	// Standard tx - signature already verified, just claim it
 	if selectedTx.Type == wallet.TxStandard {
 		myWallet.Balance += selectedTx.Amount
+		bc.UTXOSet.AddUTXO(&state.UTXO{
+			TxID:        selectedTx.ID,
+			OutputIndex: 0,
+			Amount:      selectedTx.Amount,
+			Address:     myWallet.Address,
+			FromTrophy:  bc.Height,
+			Spent:       false,
+		})
 		wallet.UpdatePendingTransaction(selectedTx.ID, "claimed")
 		wallet.SaveConfirmedTransaction(selectedTx)
 		mempool.Remove(selectedTx.ID)
