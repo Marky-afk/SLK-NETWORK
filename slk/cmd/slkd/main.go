@@ -542,8 +542,7 @@ func showMenu() {
 		fmt.Println("║  [3] View Trophy Chain                   ║")
 		fmt.Println("║  [4] P2P Network Status                  ║")
 		fmt.Println("║  [5] Send Transaction                    ║")
-		fmt.Println("║  [6] Check Incoming SLK                  ║")
-		fmt.Println("║  [7] Exit                                ║")
+		fmt.Println("║  [6] Exit                                ║")
 		fmt.Println("╚══════════════════════════════════════════╝")
 		fmt.Print("\nChoose option: ")
 
@@ -568,8 +567,6 @@ func showMenu() {
 		case "5":
 			sendTransaction(bc)
 		case "6":
-			checkIncomingTransactions()
-		case "7":
 			myWallet.Save(walletPath)
 			fmt.Println("👋 Goodbye!")
 			os.Exit(0)
