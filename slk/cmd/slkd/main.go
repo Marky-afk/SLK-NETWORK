@@ -566,10 +566,6 @@ func showMenu() {
 			p2pStatus()
 		case "5":
 			sendTransaction(bc)
-		case "6":
-			myWallet.Save(walletPath)
-			fmt.Println("👋 Goodbye!")
-			os.Exit(0)
 		default:
 			fmt.Println("❌ Invalid option")
 		}
