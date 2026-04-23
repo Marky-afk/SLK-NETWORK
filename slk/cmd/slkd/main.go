@@ -196,6 +196,26 @@ func main() {
 		racersMutex.Unlock()
 	}
 
+	p2pNode.OnTx = func(tx p2p.TxMsg) {
+		err := mempool.Add(&state.MempoolTx{
+			ID:        tx.ID,
+			From:      tx.From,
+			To:        tx.To,
+			Amount:    tx.Amount,
+			Timestamp: tx.Timestamp,
+			Signature: tx.Signature,
+			PubKey:    tx.PubKey,
+			Type:      tx.Type,
+		})
+		if err == nil {
+			fmt.Printf("\n📥 Incoming TX: %.8f SLK from %s\n", tx.Amount, tx.From[:min(16, len(tx.From))])
+			if tx.To == myWallet.Address {
+				myWallet.Balance += tx.Amount
+				myWallet.Save(walletPath)
+				fmt.Printf("💰 Balance updated: %.8f SLK\n", myWallet.Balance)
+			}
+		}
+	}
 p2pNode.Start()
 
 	// ── CHAIN SYNC SETUP ──
