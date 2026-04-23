@@ -198,8 +198,37 @@ func main() {
 	}
 
 	p2pNode.OnTx = func(tx p2p.TxMsg) {
-		// Save to disk so receiver keeps TX even after restart
-		// Always force "pending" so receiver can claim it via option [6]
+		// If this is a confirmation message — clear from mempool network-wide
+		if tx.Type == 99 {
+			mempool.Remove(tx.ID)
+			// If we are the receiver — credit UTXO if not already there
+			if tx.To == myWallet.Address {
+				existing := bc.UTXOSet.GetUnspentForAddress(myWallet.Address)
+				alreadyCredited := false
+				for _, u := range existing {
+					if u.TxID == tx.ID {
+						alreadyCredited = true
+						break
+					}
+				}
+				if !alreadyCredited {
+					bc.UTXOSet.AddUTXO(&state.UTXO{
+						TxID:        tx.ID,
+						OutputIndex: 0,
+						Amount:      tx.Amount,
+						Address:     myWallet.Address,
+						FromTrophy:  bc.Height,
+						Spent:       false,
+					})
+					bc.UTXOSet.Save()
+				}
+				myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
+				myWallet.Save(walletPath)
+				fmt.Printf("\n💰 TX confirmed! New balance: %.8f SLK\n", myWallet.Balance)
+			}
+			return
+		}
+		// Normal incoming TX — save to pending and add to mempool
 		wallet.SavePendingTransaction(wallet.Transaction{
 			ID:         tx.ID,
 			Type:       tx.Type,
@@ -224,9 +253,7 @@ func main() {
 		if err == nil {
 			fmt.Printf("\n📥 Incoming TX: %.8f SLK from %s\n", tx.Amount, tx.From[:min(16, len(tx.From))])
 			if tx.To == myWallet.Address {
-				fmt.Printf("💰 You received %.8f SLK! Use option [6] to claim it.\n", tx.Amount)
-				myWallet.Save(walletPath)
-				fmt.Printf("💰 Balance updated: %.8f SLK\n", myWallet.Balance)
+				fmt.Printf("💰 You received %.8f SLK! Check wallet for updated balance.\n", tx.Amount)
 			}
 		}
 	}
@@ -1136,6 +1163,19 @@ retry:
 	wallet.SaveConfirmedTransaction(tx)
 	// Clear from mempool immediately
 	mempool.Remove(tx.ID)
+	// Broadcast confirmation (Type 99) — all nodes clear mempool + credit receiver UTXO
+	if p2pNode != nil {
+		p2pNode.BroadcastTx(p2p.TxMsg{
+			ID:        tx.ID,
+			From:      tx.From,
+			To:        tx.To,
+			Amount:    tx.Amount,
+			Timestamp: tx.Timestamp,
+			Signature: tx.Signature,
+			PubKey:    tx.FromPubKey,
+			Type:      99,
+		})
+	}
 
 	fmt.Println("\n╔══════════════════════════════════════════════════╗")
 	fmt.Println("║           ✅ TRANSACTION CONFIRMED!               ║")

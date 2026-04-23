@@ -50,16 +50,9 @@ func (m *Mempool) Add(tx *MempoolTx) error {
 		return fmt.Errorf("invalid amount")
 	}
 
-	// Double spend check — reject if sender already has pending tx
-	pendingTotal := 0.0
-	for _, existing := range m.Txs {
-		if existing.From == tx.From {
-			pendingTotal += existing.Amount
-		}
-	}
-	if pendingTotal > 0 {
-		return fmt.Errorf("double spend detected — %s already has %.8f SLK pending",
-			tx.From, pendingTotal)
+	// Double spend check — reject if duplicate TX ID
+	if _, exists := m.Txs[tx.ID]; exists {
+		return fmt.Errorf("tx %s already in mempool", tx.ID)
 	}
 	if tx.From == tx.To {
 		return fmt.Errorf("cannot send to yourself")
