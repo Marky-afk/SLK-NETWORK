@@ -227,6 +227,7 @@ func (w *Wallet) RotatePrivateKey() error {
 
 	// Keep same address but rotate keys
 	w.PrivateKey = newPriv
+	w.PublicKey = newPub
 	// Note: public key changes but address stays same for this session
 	fmt.Println("🔄 Private key rotated for security!")
 	return nil
