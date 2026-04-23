@@ -90,14 +90,24 @@ func makeMainScreen(w fyne.Window) fyne.CanvasObject {
 	statusLabel.Alignment = fyne.TextAlignCenter
 
 	// ── AUTO REFRESH ──
+	lastBalance := myWallet.Balance
 	go func() {
 		for {
 			time.Sleep(4 * time.Second)
+			oldBal := lastBalance
 			myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
+			newBal := myWallet.Balance
+			lastBalance = newBal
 			fyne.Do(func() {
 				balanceLabel.SetText(fmt.Sprintf("%.8f SLK", myWallet.Balance))
 				mempoolLabel.SetText(fmt.Sprintf("📦 Mempool: %d pending", mempool.Size()))
 				chainLabel.SetText(fmt.Sprintf("⛓  Chain Height: %d  |  Trophies: %d", bc.Height, len(bc.Trophies)))
+				// Show popup if balance increased
+				if newBal > oldBal {
+					received := newBal - oldBal
+					statusLabel.SetText(fmt.Sprintf("📥 Received %.8f SLK!", received))
+					dialog.ShowInformation("💰 SLK Received!", fmt.Sprintf("You received %.8f SLK\nNew Balance: %.8f SLK", received, newBal), w)
+				}
 			})
 		}
 	}()
