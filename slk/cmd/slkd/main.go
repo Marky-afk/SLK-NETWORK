@@ -945,6 +945,7 @@ func startMining() {
 					if vdfErr == nil {
 						newTrophy.VDFProof = proof.Output
 						newTrophy.VDFInput = proof.Input
+						bc.SaveChain()
 					}
 
 					fmt.Printf("✅ Trophy #%d added to chain!\n", raceNum)

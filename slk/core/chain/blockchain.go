@@ -41,7 +41,7 @@ func NewBlockchain() *Blockchain {
 		Height:      0,
 		UTXOSet:     state.NewUTXOSet(),
 	}
-	bc.saveChain()
+	bc.SaveChain()
 	return bc
 }
 
@@ -86,7 +86,7 @@ func (bc *Blockchain) AddTrophy(winner string, distance, finishTime float64, tie
 	fmt.Println(newTrophy.String())
 	fmt.Printf("💰 Total SLK Remaining: %.3f\n", bc.TotalSupply)
 
-	bc.saveChain()
+	bc.SaveChain()
 	return newTrophy
 }
 
@@ -106,7 +106,7 @@ func (bc *Blockchain) IsValid() bool {
 
 // saveChain uses atomic write — temp file then rename
 // This prevents chain corruption if power cuts out mid-write
-func (bc *Blockchain) saveChain() {
+func (bc *Blockchain) SaveChain() {
 	dir := os.Getenv("HOME") + "/.slk"
 	os.MkdirAll(dir, 0700)
 	data, err := json.Marshal(bc)
