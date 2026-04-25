@@ -6,3 +6,6 @@
 *.so
 *.test
 *.log
+backups/
+data/
+*.json
