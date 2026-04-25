@@ -21,3 +21,4 @@ go build ./cmd/slkd/
 php -S 0.0.0.0:9000 slk_explorer.php
 ```
 Open http://localhost:9000
+## About
