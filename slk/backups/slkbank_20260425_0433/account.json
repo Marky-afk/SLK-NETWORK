@@ -1,0 +1,20 @@
+{
+  "account_id": "SLKB-d80fc133-3ac0746b",
+  "owner_address": "SLK-f44a-3ece-0999-4bbe",
+  "name": "FRAKLIN-MOZACK",
+  "name_locked": true,
+  "slk": 0.008,
+  "slkt": 0,
+  "slkct": 0,
+  "public_key": "pk_2a1a0b9a9633f75be777e5f9e17a7cb9",
+  "secret_key": "ENC:8cab0a6c9f09cae86b4805dc9169eadeb019b49841bf94359d75ce33678b2fecfd9d2790240099da50312c827b95ee0ef34cc1b39ddf500f4dd7d4e3220f5ec9cfd7c0016a62cc21899b69fd78ef1f297cb2ba1e534f196bb7669a0bbb522b",
+  "secret_key_hash": "439b5793986de68249538f15dc59792435fb8e688c1e814cc5ce5c912ece1ece",
+  "wallet_api_key": "slk_595101c648192770ad9e2102897e4ab670306da5ac986329",
+  "created_at": 1777058415,
+  "profile_photo": "",
+  "bio": "",
+  "location": "",
+  "login_failures": 0,
+  "locked_until": 0,
+  "bank_balances": null
+}

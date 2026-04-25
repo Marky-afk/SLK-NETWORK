@@ -1,0 +1,50 @@
+[
+  {
+    "id": "bank_18a96dc49fc7e2de",
+    "name": "FLS-MOZACK",
+    "owner_id": "SLKB-d80fc133-3ac0746b",
+    "fee_basis_points": 200,
+    "currency": "SLKA",
+    "slk_rate": 400000,
+    "total_fees": 0.00004,
+    "total_deposited": 0.002,
+    "total_issued_t": 784,
+    "created_at": 1777072219,
+    "shares": null,
+    "api_key": "slk_3565a507924d31105438874da8dda9437c844e6db046e60f",
+    "clients": [
+      {
+        "account_id": "SLKB-d80fc133-3ac0746b",
+        "name": "FRAKLIN-MOZACK",
+        "slk_address": "SLKB-d80fc133-3ac0746b",
+        "balance": 784,
+        "joined_at": 1777073999,
+        "active": true,
+        "deposits": [
+          {
+            "id": "dep_18a9701d8f22f716",
+            "client_id": "SLKB-d80fc133-3ac0746b",
+            "bank_id": "bank_18a96dc49fc7e2de",
+            "amount_slk": 0.002,
+            "amount_t": 784,
+            "deposited_at": 1777074800,
+            "withdraw_at": 1778889198,
+            "weeks_locked": 3,
+            "status": "active",
+            "interest_earned": 0,
+            "approved_by_owner": true
+          }
+        ],
+        "total_deposited": 0.002,
+        "total_withdrawn": 0,
+        "kyc_name": "FRAKLIN-MOZACK",
+        "kyc_phone": "",
+        "kyc_email": "",
+        "verified": true
+      }
+    ],
+    "announcement": "",
+    "interest_rate": 0,
+    "total_clients": 0
+  }
+]

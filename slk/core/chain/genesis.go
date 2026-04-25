@@ -6,6 +6,12 @@ import (
 
 const GenesisSeed = "The marathon of a thousand miles begins with a single step."
 
+// GenesisMessage is embedded in the SLK genesis block — permanent and immutable
+// Just like Bitcoin embedded: "Chancellor on brink of second bailout for banks"
+const GenesisMessage = "SLK — 24/Apr/2026 — Banking for the people, not the banks. The marathon of a thousand miles begins with a single step."
+const GenesisDate    = "2025-04-24"
+const GenesisCreator = "Franklin Mozac"
+
 func CreateGenesisTrophy() *trophy.Trophy {
 	prevHash := make([]byte, 32)
 	genesis := trophy.NewTrophy(

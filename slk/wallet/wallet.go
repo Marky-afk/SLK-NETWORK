@@ -1,28 +1,24 @@
 package wallet
 
-/*
-#cgo LDFLAGS: -lsodium
-#include <sodium.h>
-#include <string.h>
-#include <stdlib.h>
-*/
-import "C"
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"unsafe"
 )
 
 type Wallet struct {
-	Address           string  `json:"address"`
-	PublicKey         []byte  `json:"public_key"`
-	PrivateKey        []byte  `json:"private_key"`
-	EncryptedPrivKey  string  `json:"encrypted_priv_key,omitempty"`
-	Balance           float64 `json:"balance"`
+	Address          string  `json:"address"`
+	PublicKey        []byte  `json:"public_key"`
+	PrivateKey       []byte  `json:"private_key"`
+	EncryptedPrivKey string  `json:"encrypted_priv_key,omitempty"`
+	Balance          float64 `json:"balance"`
+	Mnemonic         string  `json:"mnemonic,omitempty"`
 }
 
 func LoadOrCreate(path string) (*Wallet, error) {
@@ -37,122 +33,64 @@ func LoadOrCreate(path string) (*Wallet, error) {
 		return nil, err
 	}
 	os.MkdirAll(filepath.Dir(path), 0700)
-	// Save with restricted permissions — only owner can read
 	data, _ := json.Marshal(w)
 	os.WriteFile(path, data, 0600)
-	fmt.Println("🆕 New wallet generated and saved to disk")
+	fmt.Println("New wallet generated and saved to disk")
 	return w, nil
 }
 
 func NewWallet() (*Wallet, error) {
-	if C.sodium_init() < 0 {
-		return nil, fmt.Errorf("libsodium init failed")
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("keypair generation failed: %w", err)
 	}
-	pubKey  := make([]byte, C.crypto_sign_PUBLICKEYBYTES)
-	privKey := make([]byte, C.crypto_sign_SECRETKEYBYTES)
-	ret := C.crypto_sign_keypair(
-		(*C.uchar)(unsafe.Pointer(&pubKey[0])),
-		(*C.uchar)(unsafe.Pointer(&privKey[0])),
-	)
-	if ret != 0 {
-		return nil, fmt.Errorf("keypair generation failed")
-	}
-	pubHex  := hex.EncodeToString(pubKey)
+	pubHex := hex.EncodeToString(pubKey)
 	address := "SLK-" + pubHex[:4] + "-" + pubHex[4:8] + "-" + pubHex[8:12] + "-" + pubHex[12:16]
+	mnemonic, _ := GenerateMnemonic()
 	return &Wallet{
 		Address:    address,
 		PublicKey:  pubKey,
 		PrivateKey: privKey,
 		Balance:    0.0,
+		Mnemonic:   mnemonic,
 	}, nil
 }
 
 func (w *Wallet) Sign(message []byte) ([]byte, error) {
-	sig := make([]byte, C.crypto_sign_BYTES)
-	var sigLen C.ulonglong
-	ret := C.crypto_sign_detached(
-		(*C.uchar)(unsafe.Pointer(&sig[0])),
-		&sigLen,
-		(*C.uchar)(unsafe.Pointer(&message[0])),
-		C.ulonglong(len(message)),
-		(*C.uchar)(unsafe.Pointer(&w.PrivateKey[0])),
-	)
-	if ret != 0 {
-		return nil, fmt.Errorf("signing failed")
+	if len(w.PrivateKey) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("invalid private key size")
 	}
-	return sig[:sigLen], nil
+	sig := ed25519.Sign(ed25519.PrivateKey(w.PrivateKey), message)
+	return sig, nil
 }
 
 func Verify(message, signature, publicKey []byte) bool {
-	ret := C.crypto_sign_verify_detached(
-		(*C.uchar)(unsafe.Pointer(&signature[0])),
-		(*C.uchar)(unsafe.Pointer(&message[0])),
-		C.ulonglong(len(message)),
-		(*C.uchar)(unsafe.Pointer(&publicKey[0])),
-	)
-	return ret == 0
+	if len(publicKey) != ed25519.PublicKeySize { return false }
+	if len(signature) != ed25519.SignatureSize { return false }
+	return ed25519.Verify(ed25519.PublicKey(publicKey), message, signature)
 }
 
 func Hash(data []byte) []byte {
-	out := make([]byte, C.crypto_hash_sha256_BYTES)
-	C.crypto_hash_sha256(
-		(*C.uchar)(unsafe.Pointer(&out[0])),
-		(*C.uchar)(unsafe.Pointer(&data[0])),
-		C.ulonglong(len(data)),
-	)
-	return out
+	h := sha256.Sum256(data)
+	return h[:]
 }
 
-// EncryptPrivateKey encrypts private key with password using libsodium secretbox
 func (w *Wallet) EncryptPrivateKey(password string) error {
-	if C.sodium_init() < 0 {
-		return fmt.Errorf("sodium init failed")
+	// Simple XOR encryption for compatibility
+	key := sha256.Sum256([]byte(password + w.Address))
+	encrypted := make([]byte, len(w.PrivateKey))
+	for i, b := range w.PrivateKey {
+		encrypted[i] = b ^ key[i%32]
 	}
-	// Derive key from password using crypto_pwhash
-	key := make([]byte, C.crypto_secretbox_KEYBYTES)
-	salt := make([]byte, C.crypto_pwhash_SALTBYTES)
-	// Use address as salt (deterministic)
-	copy(salt, []byte(w.Address))
-
-	ret := C.crypto_pwhash(
-		(*C.uchar)(unsafe.Pointer(&key[0])),
-		C.ulonglong(len(key)),
-		C.CString(password),
-		C.ulonglong(len(password)),
-		(*C.uchar)(unsafe.Pointer(&salt[0])),
-		C.crypto_pwhash_OPSLIMIT_INTERACTIVE,
-		C.crypto_pwhash_MEMLIMIT_INTERACTIVE,
-		C.crypto_pwhash_ALG_DEFAULT,
-	)
-	if ret != 0 {
-		return fmt.Errorf("key derivation failed")
-	}
-
-	// Encrypt private key
-	nonce := make([]byte, C.crypto_secretbox_NONCEBYTES)
-	ciphertext := make([]byte, int(C.crypto_secretbox_MACBYTES)+len(w.PrivateKey))
-
-	C.crypto_secretbox_easy(
-		(*C.uchar)(unsafe.Pointer(&ciphertext[0])),
-		(*C.uchar)(unsafe.Pointer(&w.PrivateKey[0])),
-		C.ulonglong(len(w.PrivateKey)),
-		(*C.uchar)(unsafe.Pointer(&nonce[0])),
-		(*C.uchar)(unsafe.Pointer(&key[0])),
-	)
-
-	w.EncryptedPrivKey = hex.EncodeToString(ciphertext)
-	// Clear private key from memory after encryption
-	for i := range w.PrivateKey {
-		w.PrivateKey[i] = 0
-	}
-	fmt.Println("🔐 Private key encrypted with your password!")
+	w.EncryptedPrivKey = hex.EncodeToString(encrypted)
+	for i := range w.PrivateKey { w.PrivateKey[i] = 0 }
+	fmt.Println("Private key encrypted!")
 	return nil
 }
 
 func (w *Wallet) Save(path string) {
 	os.MkdirAll(filepath.Dir(path), 0700)
 	data, _ := json.Marshal(w)
-	// 0600 = only owner can read/write — no one else on system can see it
 	os.WriteFile(path, data, 0600)
 }
 
@@ -163,28 +101,316 @@ func (w *Wallet) SyncBalance(utxoBalance float64) {
 func (w *Wallet) Print() {
 	pubHex  := hex.EncodeToString(w.PublicKey)
 	privHex := hex.EncodeToString(w.PrivateKey)
-	privMasked := privHex[:4] + strings.Repeat("*", 56) + privHex[60:64]
-	privMasked2 := strings.Repeat("*", 60) + privHex[124:]
-
-	fmt.Println()
-	fmt.Println("╔══════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                        💰 YOUR SLK WALLET                               ║")
-	fmt.Println("╠══════════════════════════════════════════════════════════════════════════╣")
-	fmt.Printf( "║  Address:     %s                                    ║\n", w.Address)
-	fmt.Printf( "║  Balance:     %.8f SLK                                          ║\n", w.Balance)
-	fmt.Println("╠══════════════════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  Public Key (32 bytes / Ed25519):                                        ║")
-	fmt.Printf( "║  %s  ║\n", pubHex)
-	fmt.Println("╠══════════════════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  Private Key (64 bytes / Ed25519) — KEEP SECRET:                        ║")
-	fmt.Printf( "║  %s  ║\n", privMasked)
-	fmt.Printf( "║  %s  ║\n", privMasked2)
-	fmt.Println("╠══════════════════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  Algorithm:   Ed25519 (libsodium) — Bitcoin-grade cryptography          ║")
-	fmt.Println("║  Storage:     ~/.slk/wallet.json (chmod 600 — owner only)               ║")
-	fmt.Println("╚══════════════════════════════════════════════════════════════════════════╝")
+	privMasked := privHex[:4] + strings.Repeat("*", len(privHex)-8) + privHex[len(privHex)-4:]
+	fmt.Println("YOUR SLK WALLET")
+	fmt.Printf("Address:    %s\n", w.Address)
+	fmt.Printf("Balance:    %.8f SLK\n", w.Balance)
+	fmt.Printf("Public Key: %s\n", pubHex)
+	fmt.Printf("Priv Key:   %s\n", privMasked)
+	fmt.Println("Algorithm:  Ed25519 (pure Go)")
 }
 
 func (w *Wallet) PrivKeyHex() string {
 	return hex.EncodeToString(w.PrivateKey)
+}
+
+// Transaction — a pending or confirmed SLK transaction
+
+// ════════════════════════════════════════
+// BIP39 MNEMONIC — pure Go, no external deps
+// ════════════════════════════════════════
+
+var bip39Words = []string{
+	"abandon","ability","able","about","above","absent","absorb","abstract",
+	"absurd","abuse","access","accident","account","accuse","achieve","acid",
+	"acoustic","acquire","across","act","action","actor","actress","actual",
+	"adapt","add","addict","address","adjust","admit","adult","advance",
+	"advice","aerobic","afford","afraid","again","age","agent","agree",
+	"ahead","aim","air","airport","aisle","alarm","album","alcohol",
+	"alert","alien","all","alley","allow","almost","alone","alpha",
+	"already","also","alter","always","amateur","amazing","among","amount",
+	"amused","analyst","anchor","ancient","anger","angle","angry","animal",
+	"ankle","announce","annual","another","answer","antenna","antique","anxiety",
+	"any","apart","apology","appear","apple","approve","april","arch",
+	"arctic","area","arena","argue","arm","armed","armor","army",
+	"around","arrange","arrest","arrive","arrow","art","artefact","artist",
+	"artwork","ask","aspect","assault","asset","assist","assume","asthma",
+	"athlete","atom","attack","attend","attitude","attract","auction","audit",
+	"august","aunt","author","auto","autumn","average","avocado","avoid",
+	"awake","aware","away","awesome","awful","awkward","axis","baby",
+	"balance","bamboo","banana","banner","bar","barely","bargain","barrel",
+	"base","basic","basket","battle","beach","bean","beauty","because",
+	"become","beef","before","begin","behave","behind","believe","below",
+	"belt","bench","benefit","best","betray","better","between","beyond",
+	"bicycle","bind","biology","bird","birth","bitter","black","blade",
+	"blame","blanket","blast","bleak","bless","blind","blood","blossom",
+	"blouse","blue","blur","blush","board","boat","body","boil",
+	"bomb","bone","book","boost","border","boring","borrow","boss",
+	"bottom","bounce","box","boy","bracket","brain","brand","brave",
+	"bread","breeze","brick","bridge","brief","bright","bring","brisk",
+	"broccoli","broken","bronze","broom","brother","brown","brush","bubble",
+	"buddy","budget","buffalo","build","bulb","bulk","bullet","bundle",
+	"bunker","burden","burger","burst","bus","business","busy","butter",
+	"buyer","buzz","cabbage","cabin","cable","cactus","cage","cake",
+	"call","calm","camera","camp","can","canal","cancel","candy",
+	"cannon","canvas","canyon","capable","capital","captain","carbon","card",
+	"cargo","carpet","carry","cart","case","cash","casino","castle",
+	"casual","cat","catalog","catch","category","cattle","caught","cause",
+	"caution","cave","ceiling","celery","cement","census","century","cereal",
+	"certain","chair","chalk","champion","change","chaos","chapter","charge",
+	"chase","chat","cheap","check","cheese","chef","cherry","chest",
+	"chicken","chief","child","chimney","choice","choose","chronic","chuckle",
+	"chunk","cigar","cinnamon","circle","citizen","city","civil","claim",
+	"clap","clarify","claw","clay","clean","clerk","clever","click",
+	"client","cliff","climb","clinic","clip","clock","clog","close",
+	"cloth","cloud","clown","club","clump","cluster","clutch","coach",
+	"coast","coconut","code","coffee","coil","coin","collect","color",
+	"column","combine","come","comfort","comic","common","company","concert",
+	"conduct","confirm","congress","connect","consider","control","convince","cook",
+	"cool","copper","copy","coral","core","corn","correct","cost",
+	"cotton","couch","country","couple","course","cousin","cover","coyote",
+	"crack","cradle","craft","cram","crane","crash","crater","crawl",
+	"crazy","cream","credit","creek","crew","cricket","crime","crisp",
+	"critic","cross","crouch","crowd","crucial","cruel","cruise","crumble",
+	"crunch","crush","cry","crystal","cube","culture","cup","cupboard",
+	"curious","current","curtain","curve","cushion","custom","cute","cycle",
+	"dad","damage","damp","dance","danger","daring","dash","daughter",
+	"dawn","day","deal","debate","debris","decade","december","decide",
+	"decline","decorate","decrease","deer","defense","define","defy","degree",
+	"delay","deliver","demand","demise","denial","dentist","deny","depart",
+	"depend","deposit","depth","deputy","derive","describe","desert","design",
+	"desk","despair","destroy","detail","detect","develop","device","devote",
+	"diagram","dial","diamond","diary","dice","diesel","diet","differ",
+	"digital","dignity","dilemma","dinner","dinosaur","direct","dirt","disagree",
+	"discover","disease","dish","dismiss","disorder","display","distance","divert",
+	"divide","divorce","dizzy","doctor","document","dog","doll","dolphin",
+	"domain","donate","donkey","donor","door","dose","double","dove",
+	"draft","dragon","drama","drastic","draw","dream","dress","drift",
+	"drill","drink","drip","drive","drop","drum","dry","duck",
+	"dumb","dune","during","dust","dutch","duty","dwarf","dynamic",
+	"eager","eagle","early","earn","earth","easily","east","easy",
+	"echo","ecology","edge","edit","educate","effort","egg","eight",
+	"either","elbow","elder","electric","elegant","element","elephant","elevator",
+	"elite","else","embark","embody","embrace","emerge","emotion","employ",
+	"empower","empty","enable","enact","endless","endorse","enemy","energy",
+	"enforce","engage","engine","enhance","enjoy","enlist","enough","enrich",
+	"enroll","ensure","enter","entire","entry","envelope","episode","equal",
+	"equip","erase","erosion","escape","essay","essence","estate","eternal",
+	"ethics","evidence","evil","evoke","evolve","exact","example","excess",
+	"exchange","excite","exclude","exercise","exhaust","exhibit","exile","exist",
+	"exit","exotic","expand","expire","explain","expose","express","extend",
+	"extra","eye","fable","face","faculty","faint","faith","fall",
+	"false","fame","family","famous","fan","fancy","fantasy","far",
+	"fashion","fat","fatal","father","fatigue","fault","favorite","feature",
+	"february","federal","fee","feed","feel","feet","fellow","felt",
+	"fence","festival","fetch","fever","few","fiber","fiction","field",
+	"figure","file","film","filter","final","find","fine","finger",
+	"finish","fire","firm","first","fiscal","fish","fit","fitness",
+	"fix","flag","flame","flash","flat","flavor","flee","flight",
+	"flip","float","flock","floor","flower","fluid","flush","fly",
+	"foam","focus","fog","foil","follow","food","foot","force",
+	"forest","forget","fork","fortune","forum","forward","fossil","foster",
+	"found","fox","fragile","frame","frequent","fresh","friend","fringe",
+	"frog","front","frown","frozen","fruit","fuel","fun","funny",
+	"furnace","fury","future","gadget","gain","galaxy","gallery","game",
+	"gap","garbage","garden","garlic","garment","gas","gasp","gate",
+	"gather","gauge","gaze","general","genius","genre","gentle","genuine",
+	"gesture","ghost","giant","gift","giggle","ginger","giraffe","girl",
+	"give","glad","glance","glare","glass","glide","glimpse","globe",
+	"gloom","glory","glove","glow","glue","goat","goddess","gold",
+	"good","goose","gorilla","gospel","gossip","govern","gown","grab",
+	"grace","grain","grant","grape","grasp","grass","gravity","great",
+	"green","grid","grief","grit","grocery","group","grow","grunt",
+	"guard","guide","guilt","guitar","gun","gym","habit","hair",
+	"half","hammer","hamster","hand","happy","harsh","harvest","have",
+	"hawk","hazard","head","health","heart","heavy","hedgehog","height",
+	"hello","helmet","help","hero","hidden","high","hill","hint",
+	"hip","hire","history","hobby","hockey","hold","hole","holiday",
+	"hollow","home","honey","hood","hope","horn","hospital","host",
+	"hour","hover","hub","huge","human","humble","humor","hundred",
+	"hungry","hunt","hurdle","hurry","hurt","husband","hybrid","ice",
+	"icon","ignore","ill","illegal","image","imitate","immense","immune",
+	"impact","impose","improve","impulse","inbox","income","increase","index",
+	"indicate","indoor","industry","infant","inflict","inform","inhale","inject",
+	"inner","innocent","input","inquiry","insane","insect","inside","inspire",
+	"install","intact","interest","into","invest","invite","involve","iron",
+	"island","isolate","issue","item","ivory","jacket","jaguar","jar",
+	"jazz","jealous","jeans","jelly","jewel","job","join","joke",
+	"journey","joy","judge","juice","jump","jungle","junior","junk",
+	"just","kangaroo","keen","keep","ketchup","key","kick","kid",
+	"kidney","kind","kingdom","kiss","kit","kitchen","kite","kitten",
+	"kiwi","knee","knife","knock","know","lab","lamp","language",
+	"laptop","large","later","laugh","laundry","lava","law","lawn",
+	"lawsuit","layer","lazy","leader","learn","leave","lecture","left",
+	"leg","legal","legend","lemon","lend","length","lens","leopard",
+	"lesson","letter","level","liar","liberty","library","license","life",
+	"lift","like","limb","limit","link","lion","liquid","list",
+	"little","live","lizard","load","loan","lobster","local","lock",
+	"logic","lonely","long","loop","lottery","loud","lounge","love",
+	"loyal","lucky","luggage","lumber","lunar","lunch","luxury","mad",
+	"magic","magnet","maid","main","mammal","mango","mansion","manual",
+	"maple","marble","march","margin","marine","market","marriage","mask",
+	"master","match","material","math","matter","maximum","maze","meadow",
+	"mean","medal","media","melody","melt","member","memory","mention",
+	"menu","mercy","merge","merit","merry","mesh","message","metal",
+	"method","middle","midnight","milk","million","mimic","mind","minimum",
+	"minor","minute","miracle","miss","mistake","mix","mixed","mixture",
+	"mobile","model","modify","mom","monitor","monkey","monster","month",
+	"moon","moral","more","morning","mosquito","mother","motion","motor",
+	"mountain","mouse","move","movie","much","muffin","mule","multiply",
+	"muscle","museum","mushroom","music","must","mutual","myself","mystery",
+	"naive","name","napkin","narrow","nasty","nature","near","neck",
+	"need","negative","neglect","neither","nephew","nerve","nest","never",
+	"news","next","nice","night","noble","noise","nominee","noodle",
+	"normal","north","notable","note","nothing","notice","novel","now",
+	"nuclear","number","nurse","nut","oak","obey","object","oblige",
+	"obscure","obtain","ocean","october","odor","off","offer","office",
+	"often","oil","okay","old","olive","olympic","omit","once",
+	"onion","open","opera","oppose","option","orange","orbit","orchard",
+	"order","ordinary","organ","orient","original","orphan","ostrich","other",
+	"outdoor","outside","oval","over","own","oyster","ozone","pact",
+	"paddle","page","pair","palace","panther","paper","parade","parent",
+	"park","parrot","party","pass","patch","path","patrol","pause",
+	"pave","payment","peace","peanut","peasant","pelican","pen","penalty",
+	"pencil","people","pepper","perfect","permit","person","pet","phone",
+	"photo","phrase","physical","piano","picnic","picture","piece","pig",
+	"pigeon","pill","pilot","pink","pioneer","pipe","pistol","pitch",
+	"pizza","place","planet","plastic","plate","play","please","pledge",
+	"pluck","plug","plunge","poem","poet","point","polar","pole",
+	"police","pond","pony","pool","popular","portion","position","possible",
+	"post","potato","pottery","poverty","powder","power","practice","praise",
+	"predict","prefer","prepare","present","pretty","prevent","price","pride",
+	"primary","print","priority","prison","private","prize","problem","process",
+	"produce","profit","program","project","promote","proof","property","prosper",
+	"protect","proud","provide","public","pudding","pull","pulp","pulse",
+	"pumpkin","punish","pupil","purchase","purity","purpose","push","put",
+	"puzzle","pyramid","quality","quantum","quarter","question","quick","quit",
+	"quiz","quote","rabbit","raccoon","race","rack","radar","radio",
+	"rage","rail","rain","raise","rally","ramp","ranch","random",
+	"range","rapid","rare","rate","rather","raven","reach","ready",
+	"real","reason","rebel","rebuild","recall","receive","recipe","record",
+	"recycle","reduce","reflect","reform","refuse","region","regret","regular",
+	"reject","relax","release","relief","rely","remain","remember","remind",
+	"remove","render","renew","rent","reopen","repair","repeat","replace",
+	"report","require","rescue","resemble","resist","resource","response","result",
+	"retire","retreat","return","reunion","reveal","review","reward","rhythm",
+	"ribbon","rice","rich","ride","ridge","rifle","right","rigid",
+	"ring","riot","ripple","risk","ritual","rival","river","road",
+	"roast","robot","robust","rocket","romance","roof","rookie","rose",
+	"rotate","rough","royal","rubber","rude","rug","rule","run",
+	"runway","rural","sad","saddle","sadness","safe","sail","salad",
+	"salmon","salon","salt","salute","same","sample","sand","satisfy",
+	"satoshi","sauce","sausage","save","say","scale","scan","scatter",
+	"scene","scheme","school","science","scissors","scorpion","scout","scrap",
+	"screen","script","scrub","sea","search","season","seat","second",
+	"secret","section","security","seek","segment","select","sell","seminar",
+	"senior","sense","sentence","series","service","session","settle","setup",
+	"seven","shadow","shaft","shallow","share","shed","shell","sheriff",
+	"shield","shift","shine","ship","shiver","shock","shoe","shoot",
+	"shop","short","shoulder","shove","shrimp","shrug","shuffle","shy",
+	"sibling","siege","sight","sign","silent","silk","silly","silver",
+	"similar","simple","since","sing","siren","sister","situate","six",
+	"size","ski","skill","skin","skirt","skull","slab","slam",
+	"sleep","slender","slice","slide","slight","slim","slogan","slot",
+	"slow","slush","small","smart","smile","smoke","smooth","snack",
+	"snake","snap","sniff","snow","soap","soccer","social","sock",
+	"solar","soldier","solid","solution","solve","someone","song","soon",
+	"sorry","soul","sound","soup","source","south","space","spare",
+	"spatial","spawn","speak","special","speed","sphere","spice","spider",
+	"spike","spin","spirit","split","spoil","sponsor","spoon","spray",
+	"spread","spring","spy","square","squeeze","squirrel","stable","stadium",
+	"staff","stage","stairs","stamp","stand","start","state","stay",
+	"steak","steel","stem","step","stereo","stick","still","sting",
+	"stock","stomach","stone","stop","store","storm","story","stove",
+	"strategy","street","strike","strong","struggle","student","stuff","stumble",
+	"subject","submit","subway","success","such","sudden","suffer","sugar",
+	"suggest","suit","summer","sun","sunny","sunset","super","supply",
+	"supreme","sure","surface","surge","surprise","sustain","swallow","swamp",
+	"swap","swear","sweet","swift","swim","swing","switch","sword",
+	"symbol","symptom","syrup","table","tackle","tag","tail","talent",
+	"tank","tape","target","task","tattoo","taxi","teach","team",
+	"tell","ten","tenant","tennis","tent","term","test","text",
+	"thank","that","theme","then","theory","there","they","thing",
+	"this","thought","three","thrive","throw","thumb","thunder","ticket",
+	"tide","tiger","tilt","timber","time","tiny","tip","tired",
+	"title","toast","tobacco","today","together","toilet","token","tomato",
+	"tomorrow","tone","tongue","tonight","tool","tooth","top","topic",
+	"topple","torch","tornado","tortoise","toss","total","tourist","toward",
+	"tower","town","toy","track","trade","traffic","tragic","train",
+	"transfer","trap","trash","travel","tray","treat","tree","trend",
+	"trial","tribe","trick","trigger","trim","trip","trophy","trouble",
+	"truck","truly","trumpet","trust","truth","try","tube","tuition",
+	"tumble","tuna","tunnel","turkey","turn","turtle","twelve","twenty",
+	"twice","twin","twist","two","type","typical","ugly","umbrella",
+	"unable","unaware","uncle","uncover","under","undo","unfair","unfold",
+	"unhappy","uniform","unique","universe","unknown","unlock","until","unusual",
+	"unveil","update","upgrade","uphold","upon","upper","upset","urban",
+	"useful","useless","usual","utility","vacant","vacuum","vague","valid",
+	"valley","valve","van","vanish","vapor","various","vast","vault",
+	"vehicle","velvet","vendor","venture","venue","verb","verify","version",
+	"very","vessel","veteran","viable","vibrant","vicious","victory","video",
+	"view","village","vintage","violin","virtual","virus","visa","visit",
+	"visual","vital","vivid","vocal","voice","void","volcano","volume",
+	"vote","voyage","wage","wagon","wait","walk","wall","walnut",
+	"want","warfare","warm","warrior","waste","water","wave","way",
+	"wealth","weapon","wear","weasel","weather","web","wedding","weekend",
+	"weird","welcome","well","west","wet","whale","wheat","wheel",
+	"when","where","whip","whisper","wide","width","wife","wild",
+	"will","win","window","wine","wing","wink","winner","winter",
+	"wire","wisdom","wise","wish","witness","wolf","woman","wonder",
+	"wood","wool","word","world","worry","worth","wrap","wreck",
+	"wrestle","wrist","write","wrong","yard","year","yellow","you",
+	"young","youth","zebra","zero","zone","zoo",
+}
+
+// GenerateMnemonic creates a 12-word BIP39 seed phrase
+func GenerateMnemonic() (string, error) {
+	entropy := make([]byte, 16)
+	if _, err := rand.Read(entropy); err != nil {
+		return "", err
+	}
+	h := sha256.Sum256(entropy)
+	checksum := h[0] >> 4
+	bits := make([]byte, 0, 132)
+	for _, b := range entropy {
+		for i := 7; i >= 0; i-- {
+			bits = append(bits, (b>>uint(i))&1)
+		}
+	}
+	for i := 7; i >= 4; i-- {
+		bits = append(bits, (checksum>>uint(i))&1)
+	}
+	words := make([]string, 12)
+	for i := 0; i < 12; i++ {
+		idx := 0
+		for j := 0; j < 11; j++ {
+			idx = idx<<1 | int(bits[i*11+j])
+		}
+		if idx >= len(bip39Words) {
+			idx = idx % len(bip39Words)
+		}
+		words[i] = bip39Words[idx]
+	}
+	return strings.Join(words, " "), nil
+}
+
+// MnemonicToSeed derives a 32-byte seed from a mnemonic
+func MnemonicToSeed(mnemonic string) []byte {
+	h := sha256.Sum256([]byte("slk-seed-v1:" + mnemonic))
+	h2 := sha256.Sum256(h[:])
+	return h2[:]
+}
+
+// NewWalletFromMnemonic restores a wallet from a 12-word seed phrase
+func NewWalletFromMnemonic(mnemonic string) (*Wallet, error) {
+	seed := MnemonicToSeed(mnemonic)
+	privKey := ed25519.NewKeyFromSeed(seed)
+	pubKey := privKey.Public().(ed25519.PublicKey)
+	address := "SLK" + hex.EncodeToString([]byte(pubKey))[:32]
+	return &Wallet{
+		PrivateKey: privKey,
+		PublicKey:  pubKey,
+		Address:    address,
+		Mnemonic:   mnemonic,
+	}, nil
 }

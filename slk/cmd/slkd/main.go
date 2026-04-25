@@ -331,12 +331,35 @@ p2pNode.Start()
 			bc.Trophies = append(bc.Trophies, newT)
 			bc.Height = t.Height
 			bc.TotalSupply -= newT.Reward
+
+			// ── UTXO SYNC — create UTXO for every synced trophy winner ──
+			txID := fmt.Sprintf("%x", newT.Hash)[:16] + fmt.Sprintf("%d", t.Height)
+			existing := bc.UTXOSet.GetUnspentForAddress(t.Winner)
+			alreadyExists := false
+			for _, u := range existing {
+				if u.TxID == txID {
+					alreadyExists = true
+					break
+				}
+			}
+			if !alreadyExists {
+				bc.UTXOSet.AddUTXO(&state.UTXO{
+					TxID:        txID,
+					OutputIndex: 0,
+					Amount:      newT.Reward,
+					Address:     t.Winner,
+					FromTrophy:  t.Height,
+					Spent:       false,
+				})
+			}
 			synced++
 		}
 		if synced > 0 {
-			// Sync balance after chain update
+			// Save UTXO set and sync our own balance
+			bc.UTXOSet.Save()
 			myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
-			fmt.Printf("\n🔗 SYNCED %d trophies — chain height now %d\n", synced, bc.Height)
+			myWallet.Save(walletPath)
+			fmt.Printf("\n🔗 SYNCED %d trophies — chain height now %d | balance: %.8f SLK\n", synced, bc.Height, myWallet.Balance)
 		}
 	}()
 
@@ -371,7 +394,11 @@ func startAPIServer() {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"height":       bc.Height,
-			"total_supply": 2000000000.0 - float64(bc.Height)*0.008,
+			"total_supply":    2000000000.00000000,
+			"total_mined":     float64(bc.Height) * 0.00800000,
+			"remaining":       2000000000.00000000 - float64(bc.Height)*0.00800000,
+			"block_reward":    0.00800000,
+			"block_height":    bc.Height,
 			"peers":        p2pNode.PeerCount,
 			"my_address":   myWallet.Address,
 			"my_balance":   myWallet.Balance,
@@ -481,6 +508,122 @@ func startAPIServer() {
 		}
 		if racers == nil { racers = []RacerJSON{} }
 		json.NewEncoder(w).Encode(racers)
+	})
+
+	// ── Wallet lookup ──
+	http.HandleFunc("/api/wallet", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		addr := r.URL.Query().Get("address")
+		if addr == "" { json.NewEncoder(w).Encode(map[string]string{"error": "missing address"}); return }
+		balance := bc.UTXOSet.GetBalance(addr)
+		trophyCount := 0
+		for _, t := range bc.Trophies {
+			if t.Winner == addr { trophyCount++ }
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"address":      addr,
+			"balance":      balance,
+			"trophy_count": trophyCount,
+		})
+	})
+
+	// ── Transaction history ──
+	http.HandleFunc("/api/transactions", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		type TxJSON struct {
+			ID        string  `json:"id"`
+			From      string  `json:"from"`
+			To        string  `json:"to"`
+			Amount    float64 `json:"amount"`
+			Fee       float64 `json:"fee"`
+			Timestamp int64   `json:"timestamp"`
+			Type      int     `json:"type"`
+		}
+		var txs []TxJSON
+		for _, tx := range mempool.GetAll() {
+			txs = append(txs, TxJSON{
+				ID: tx.ID, From: tx.From, To: tx.To,
+				Amount: tx.Amount, Fee: tx.Fee,
+				Timestamp: tx.Timestamp, Type: tx.Type,
+			})
+		}
+		if txs == nil { txs = []TxJSON{} }
+		json.NewEncoder(w).Encode(txs)
+	})
+
+	// ── Mempool status ──
+	http.HandleFunc("/api/mempool", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"pending": mempool.Size(),
+			"txs":     mempool.GetAll(),
+		})
+	})
+
+	// ── Network peers ──
+	http.HandleFunc("/api/peers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"count": p2pNode.PeerCount,
+			"peers": p2pNode.GetPeers(),
+		})
+	})
+
+	// ── Block by height ──
+	http.HandleFunc("/api/block", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		heightStr := r.URL.Query().Get("height")
+		if heightStr == "" { json.NewEncoder(w).Encode(map[string]string{"error": "missing height"}); return }
+		var h uint64
+		fmt.Sscanf(heightStr, "%d", &h)
+		for _, t := range bc.Trophies {
+			if t.Header.Height == h {
+				tierStr := "Gold"
+				if t.Tier == 1 { tierStr = "Silver" }
+				if t.Tier == 2 { tierStr = "Bronze" }
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"height":   t.Header.Height,
+					"winner":   t.Winner,
+					"distance": t.Distance,
+					"time":     t.FinishTime,
+					"reward":   t.Reward,
+					"hash":     fmt.Sprintf("%x", t.Hash),
+					"prevhash": fmt.Sprintf("%x", t.PrevHash),
+					"tier":     tierStr,
+					"timestamp": t.Timestamp,
+				})
+				return
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]string{"error": "block not found"})
+	})
+
+	// ── Search (block height or wallet address) ──
+	http.HandleFunc("/api/search", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		q := r.URL.Query().Get("q")
+		if q == "" { json.NewEncoder(w).Encode(map[string]string{"error": "missing query"}); return }
+		var h uint64
+		if _, err := fmt.Sscanf(q, "%d", &h); err == nil {
+			for _, t := range bc.Trophies {
+				if t.Header.Height == h {
+					json.NewEncoder(w).Encode(map[string]string{"type": "block", "value": q})
+					return
+				}
+			}
+		}
+		balance := bc.UTXOSet.GetBalance(q)
+		if balance >= 0 {
+			json.NewEncoder(w).Encode(map[string]string{"type": "wallet", "value": q})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"type": "unknown"})
 	})
 
 	// API server started silently

@@ -104,10 +104,25 @@ func (bc *Blockchain) IsValid() bool {
 	return true
 }
 
+// saveChain uses atomic write — temp file then rename
+// This prevents chain corruption if power cuts out mid-write
 func (bc *Blockchain) saveChain() {
-	os.MkdirAll(os.Getenv("HOME")+"/.slk", 0700)
-	data, _ := json.Marshal(bc)
-	os.WriteFile(chainPath, data, 0600)
+	dir := os.Getenv("HOME") + "/.slk"
+	os.MkdirAll(dir, 0700)
+	data, err := json.Marshal(bc)
+	if err != nil {
+		fmt.Printf("Chain marshal error: %v\n", err)
+		return
+	}
+	tmp := chainPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		fmt.Printf("Chain write error: %v\n", err)
+		return
+	}
+	// Atomic rename — either fully written or not at all
+	if err := os.Rename(tmp, chainPath); err != nil {
+		fmt.Printf("Chain rename error: %v\n", err)
+	}
 }
 
 func loadChain() (*Blockchain, error) {

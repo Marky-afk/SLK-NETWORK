@@ -1,20 +1,13 @@
 package wallet
 
-/*
-#cgo LDFLAGS: -lsodium
-#include <sodium.h>
-#include <string.h>
-#include <stdlib.h>
-*/
-import "C"
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"time"
-	"unsafe"
 )
 
 // Transaction types
@@ -211,25 +204,14 @@ func IncrementAttempts(txID string) int {
 
 // RotatePrivateKey generates new private key after use
 func (w *Wallet) RotatePrivateKey() error {
-	if C.sodium_init() < 0 {
-		return fmt.Errorf("sodium init failed")
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("key generation failed: %w", err)
 	}
-
-	newPub  := make([]byte, C.crypto_sign_PUBLICKEYBYTES)
-	newPriv := make([]byte, C.crypto_sign_SECRETKEYBYTES)
-
-	ret := C.crypto_sign_keypair(
-		(*C.uchar)(unsafe.Pointer(&newPub[0])),
-		(*C.uchar)(unsafe.Pointer(&newPriv[0])),
-	)
-	if ret != 0 {
-		return fmt.Errorf("key generation failed")
-	}
-
-	// Keep same address but rotate keys
-	w.PrivateKey = newPriv
-	w.PublicKey = newPub
-	// Note: public key changes but address stays same for this session
-	fmt.Println("🔄 Private key rotated for security!")
+	w.PrivateKey = privKey
+	w.PublicKey  = pubKey
+	fmt.Println("Private key rotated for security!")
 	return nil
 }
+
+

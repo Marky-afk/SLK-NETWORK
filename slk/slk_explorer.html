@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SLK Block Explorer</title>
+<style>
+:root{--bg:#0a0e1a;--card:#111827;--border:#1e2d45;--accent:#00d4ff;--accent2:#7c3aed;--gold:#f59e0b;--green:#10b981;--red:#ef4444;--text:#e2e8f0;--muted:#64748b}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
+nav{background:#0d1525;border-bottom:1px solid var(--border);padding:0 2rem;display:flex;align-items:center;justify-content:space-between;height:60px;position:sticky;top:0;z-index:100}
+.logo{font-size:1.4rem;font-weight:800;color:var(--accent);letter-spacing:2px}
+.logo span{color:var(--accent2)}
+.node-input{background:#0a0e1a;border:1px solid var(--border);border-radius:6px;padding:.4rem .8rem;color:var(--text);font-size:.85rem;width:220px;outline:none}
+.node-input:focus{border-color:var(--accent)}
+.connect-btn{background:var(--accent);color:#000;border:none;border-radius:6px;padding:.4rem .8rem;font-weight:700;cursor:pointer;margin-left:.5rem}
+.live-dot{width:8px;height:8px;background:var(--green);border-radius:50%;display:inline-block;margin-right:6px;animation:pulse 2s infinite}
+.live-dot.off{background:var(--red);animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.stats-bar{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--border);border-bottom:1px solid var(--border)}
+.stat-item{background:var(--card);padding:1rem;text-align:center}
+.stat-value{font-size:1.1rem;font-weight:800;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat-label{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-top:.2rem}
+.search-bar{background:var(--card);border-bottom:1px solid var(--border);padding:1rem 2rem;display:flex;gap:.75rem}
+.search-input{flex:1;background:#0a0e1a;border:1px solid var(--border);border-radius:8px;padding:.6rem 1rem;color:var(--text);font-size:.9rem;outline:none}
+.search-input:focus{border-color:var(--accent)}
+.search-btn{background:var(--accent);color:#000;border:none;border-radius:8px;padding:.6rem 1.2rem;font-weight:700;cursor:pointer}
+.main{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;padding:1.5rem 2rem;max-width:1400px;margin:0 auto}
+@media(max-width:900px){.main{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.card-header{padding:.9rem 1.2rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.card-header h3{font-size:.95rem;font-weight:700}
+.card-sub{font-size:.8rem;color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+th{background:#0d1525;padding:.6rem 1rem;text-align:left;color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.5px}
+td{padding:.65rem 1rem;border-bottom:1px solid var(--border)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(255,255,255,.02)}
+.hash{font-family:monospace;color:var(--accent);font-size:.78rem}
+.badge{padding:.15rem .5rem;border-radius:20px;font-size:.72rem;font-weight:700}
+.bg{background:rgba(245,158,11,.15);color:var(--gold)}
+.bs{background:rgba(148,163,184,.15);color:#94a3b8}
+.bb{background:rgba(180,83,9,.15);color:#b45309}
+.bg-green{background:rgba(16,185,129,.15);color:var(--green)}
+.loading{text-align:center;padding:2rem;color:var(--muted);font-size:.85rem}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:.5rem}
+@keyframes spin{to{transform:rotate(360deg)}}
+.result-card{background:var(--card);border:1px solid var(--accent);border-radius:12px;padding:1.5rem;margin:0 2rem 1rem;display:none}
+.result-card h3{color:var(--accent);margin-bottom:1rem}
+.kv{display:flex;gap:1rem;margin-bottom:.5rem;flex-wrap:wrap}
+.kv .k{color:var(--muted);font-size:.82rem;min-width:120px}
+.kv .v{font-size:.82rem;word-break:break-all}
+.big-num{font-size:2rem;font-weight:900;color:var(--accent)}
+footer{text-align:center;padding:2rem;color:var(--muted);font-size:.82rem;border-top:1px solid var(--border);margin-top:2rem}
+footer a{color:var(--accent);text-decoration:none}
+.offline-msg{text-align:center;padding:3rem 2rem;color:var(--muted)}
+.offline-msg h2{color:var(--red);margin-bottom:1rem}
+.tab-bar{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 2rem;background:var(--card)}
+.tab{padding:.75rem 1.2rem;cursor:pointer;font-size:.88rem;color:var(--muted);border-bottom:2px solid transparent;transition:all .2s}
+.tab.active,.tab:hover{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-content{display:none}
+.tab-content.active{display:block}
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo">SLK<span>◆</span>EXPLORER</div>
+  <div style="display:flex;align-items:center;gap:.5rem">
+    <span class="live-dot off" id="dot"></span>
+    <span id="node-status" style="font-size:.82rem;color:var(--muted)">Not connected</span>
+    <input class="node-input" id="node-url" value="http://localhost:8080" placeholder="Node URL">
+    <button class="connect-btn" onclick="connect()">Connect</button>
+  </div>
+</nav>
+
+<div class="stats-bar" id="stats-bar">
+  <div class="stat-item"><div class="stat-value" id="s-height">—</div><div class="stat-label">Block Height</div></div>
+  <div class="stat-item"><div class="stat-value" id="s-mined">—</div><div class="stat-label">SLK Mined</div></div>
+  <div class="stat-item"><div class="stat-value" id="s-remaining">—</div><div class="stat-label">Remaining</div></div>
+  <div class="stat-item"><div class="stat-value" id="s-peers">—</div><div class="stat-label">Peers</div></div>
+  <div class="stat-item"><div class="stat-value" id="s-mempool">—</div><div class="stat-label">Pending TXs</div></div>
+  <div class="stat-item"><div class="stat-value" id="s-supply">2B</div><div class="stat-label">Total Supply</div></div>
+</div>
+
+<div class="search-bar">
+  <input class="search-input" id="search" placeholder="Search block height, wallet address..." onkeydown="if(event.key==='Enter')search_()">
+  <button class="search-btn" onclick="search_()">Search</button>
+</div>
+
+<div class="result-card" id="result-card">
+  <h3 id="result-title"></h3>
+  <div id="result-body"></div>
+</div>
+
+<div class="tab-bar">
+  <div class="tab active" onclick="showTab('blocks')">⛏️ Blocks</div>
+  <div class="tab" onclick="showTab('leaderboard')">🏆 Leaderboard</div>
+  <div class="tab" onclick="showTab('mempool')">📬 Mempool</div>
+  <div class="tab" onclick="showTab('racers')">🏎️ Live Racers</div>
+  <div class="tab" onclick="showTab('network')">🌐 Network</div>
+</div>
+
+<div class="main">
+  <div class="tab-content active" id="tab-blocks" style="display:block;grid-column:1/-1">
+    <div class="card">
+      <div class="card-header"><h3>⛏️ Latest Blocks</h3><span class="card-sub" id="block-count"></span></div>
+      <table><thead><tr><th>Height</th><th>Winner</th><th>Reward</th><th>Tier</th><th>Distance</th><th>Time</th><th>Hash</th></tr></thead>
+      <tbody id="blocks-body"><tr><td colspan="7" class="loading"><span class="spinner"></span>Waiting for node...</td></tr></tbody></table>
+    </div>
+  </div>
+  <div class="tab-content" id="tab-leaderboard" style="grid-column:1/-1">
+    <div class="card">
+      <div class="card-header"><h3>🏆 All-Time Leaderboard</h3><span class="card-sub">Ranked by trophies mined</span></div>
+      <table><thead><tr><th>Rank</th><th>Address</th><th>Trophies</th><th>SLK Earned</th></tr></thead>
+      <tbody id="lb-body"><tr><td colspan="4" class="loading"><span class="spinner"></span>Loading...</td></tr></tbody></table>
+    </div>
+  </div>
+  <div class="tab-content" id="tab-mempool" style="grid-column:1/-1">
+    <div class="card">
+      <div class="card-header"><h3>📬 Mempool</h3><span class="card-sub" id="mempool-count">Pending transactions</span></div>
+      <table><thead><tr><th>TX ID</th><th>From</th><th>To</th><th>Amount</th><th>Fee</th><th>Age</th></tr></thead>
+      <tbody id="mempool-body"><tr><td colspan="6" class="loading"><span class="spinner"></span>Loading...</td></tr></tbody></table>
+    </div>
+  </div>
+  <div class="tab-content" id="tab-racers" style="grid-column:1/-1">
+    <div class="card">
+      <div class="card-header"><h3>🏎️ Live Racers</h3><span class="card-sub">Currently mining</span></div>
+      <table><thead><tr><th>Name</th><th>Address</th><th>Distance Left</th><th>Power</th><th>Temp</th><th>Status</th></tr></thead>
+      <tbody id="racers-body"><tr><td colspan="6" class="loading"><span class="spinner"></span>Loading...</td></tr></tbody></table>
+    </div>
+  </div>
+  <div class="tab-content" id="tab-network" style="grid-column:1/-1">
+    <div class="card">
+      <div class="card-header"><h3>🌐 Connected Peers</h3><span class="card-sub" id="peer-count"></span></div>
+      <table><thead><tr><th>#</th><th>Peer ID</th><th>Status</th></tr></thead>
+      <tbody id="peers-body"><tr><td colspan="3" class="loading"><span class="spinner"></span>Loading...</td></tr></tbody></table>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <strong style="color:var(--accent)">SLK Block Explorer</strong> — Open Source • Connect to any SLK node<br>
+  <span style="font-size:.75rem">SLK Network — Proof of Race Blockchain — Fixed Supply 2,000,000,000 SLK</span>
+</footer>
+
+<script>
+let NODE = localStorage.getItem('slk_node') || 'http://localhost:8080';
+let online = false;
+let refreshTimer = null;
+
+document.getElementById('node-url').value = NODE;
+
+async function api(ep) {
+  try {
+    const r = await fetch(NODE + ep, {signal: AbortSignal.timeout(4000)});
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+function short(s, n=12) {
+  if (!s) return '—';
+  return s.length > n*2 ? s.slice(0,n)+'...'+s.slice(-6) : s;
+}
+
+function timeAgo(ts) {
+  const s = Math.floor(Date.now()/1000) - ts;
+  if (s < 60) return s+'s ago';
+  if (s < 3600) return Math.floor(s/60)+'m ago';
+  return Math.floor(s/3600)+'h ago';
+}
+
+function tier(t) {
+  if (t==='Gold')   return '<span class="badge bg">🥇 Gold</span>';
+  if (t==='Silver') return '<span class="badge bs">🥈 Silver</span>';
+  return '<span class="badge bb">🥉 Bronze</span>';
+}
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['blocks','leaderboard','mempool','racers','network'][i]===name));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  const el = document.getElementById('tab-'+name);
+  if (el) { el.classList.add('active'); el.style.display='block'; }
+  ['blocks','leaderboard','mempool','racers','network'].filter(n=>n!==name).forEach(n => {
+    const e = document.getElementById('tab-'+n); if(e) e.style.display='none';
+  });
+  loadTab(name);
+}
+
+async function loadTab(name) {
+  if (!online) return;
+  if (name==='blocks')      await loadBlocks();
+  if (name==='leaderboard') await loadLeaderboard();
+  if (name==='mempool')     await loadMempool();
+  if (name==='racers')      await loadRacers();
+  if (name==='network')     await loadNetwork();
+}
+
+async function connect() {
+  NODE = document.getElementById('node-url').value.trim().replace(/\/+$/,'');
+  localStorage.setItem('slk_node', NODE);
+  await refresh();
+}
+
+async function refresh() {
+  const stats = await api('/api/stats');
+  if (!stats) {
+    online = false;
+    document.getElementById('dot').className='live-dot off';
+    document.getElementById('node-status').textContent='Offline';
+    document.getElementById('node-status').style.color='var(--red)';
+    return;
+  }
+  online = true;
+  document.getElementById('dot').className='live-dot';
+  document.getElementById('node-status').textContent='Online — '+NODE.replace('http://','');
+  document.getElementById('node-status').style.color='var(--green)';
+
+  const TOTAL_SUPPLY = 2000000000.00000000;
+  const BLOCK_REWARD = 0.00800000;
+  const height = stats.height || 0;
+  const mined = height * BLOCK_REWARD;
+  const remaining = TOTAL_SUPPLY - mined;
+  document.getElementById('s-height').textContent = height.toLocaleString();
+  document.getElementById('s-mined').textContent = mined.toFixed(8) + ' SLK';
+  document.getElementById('s-remaining').textContent = remaining.toLocaleString('en-US', {minimumFractionDigits:8, maximumFractionDigits:8}) + ' SLK';
+  document.getElementById('s-peers').textContent = stats.peers||0;
+
+  const mp = await api('/api/mempool');
+  document.getElementById('s-mempool').textContent = mp?.pending||0;
+
+  // Refresh active tab
+  const activeTab = document.querySelector('.tab.active');
+  const tabs = ['blocks','leaderboard','mempool','racers','network'];
+  const idx = Array.from(document.querySelectorAll('.tab')).indexOf(activeTab);
+  if (idx >= 0) await loadTab(tabs[idx]);
+}
+
+async function loadBlocks() {
+  const data = await api('/api/trophies');
+  const tbody = document.getElementById('blocks-body');
+  if (!data||!data.length) {
+    tbody.innerHTML='<tr><td colspan="7" class="loading">No blocks yet — start mining!</td></tr>';
+    document.getElementById('block-count').textContent='';
+    return;
+  }
+  document.getElementById('block-count').textContent = data.length+' total blocks';
+  const rows = [...data].reverse().slice(0,50);
+  tbody.innerHTML = rows.map(b => `<tr>
+    <td><strong>#${b.height}</strong></td>
+    <td class="hash">${short(b.winner)}</td>
+    <td style="color:var(--green)">${b.reward.toFixed(8)}</td>
+    <td>${tier(b.tier)}</td>
+    <td>${b.distance?.toFixed(4)||'—'}</td>
+    <td>${b.time?.toFixed(2)||'—'}s</td>
+    <td class="hash">${b.hash?.slice(0,14)||'—'}...</td>
+  </tr>`).join('');
+}
+
+async function loadLeaderboard() {
+  const data = await api('/api/leaderboard');
+  const tbody = document.getElementById('lb-body');
+  if (!data||!data.length) { tbody.innerHTML='<tr><td colspan="4" class="loading">No miners yet</td></tr>'; return; }
+  tbody.innerHTML = data.map((e,i) => `<tr>
+    <td><strong>${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+(i+1)}</strong></td>
+    <td class="hash">${short(e.address)}</td>
+    <td>${e.trophies}</td>
+    <td style="color:var(--green)">${e.balance.toFixed(8)} SLK</td>
+  </tr>`).join('');
+}
+
+async function loadMempool() {
+  const data = await api('/api/mempool');
+  const tbody = document.getElementById('mempool-body');
+  const txs = data?.txs||[];
+  document.getElementById('mempool-count').textContent = txs.length+' pending';
+  if (!txs.length) { tbody.innerHTML='<tr><td colspan="6" class="loading">Mempool empty</td></tr>'; return; }
+  tbody.innerHTML = txs.map(t => `<tr>
+    <td class="hash">${t.id?.slice(0,10)||'—'}...</td>
+    <td class="hash">${short(t.from)}</td>
+    <td class="hash">${short(t.to)}</td>
+    <td style="color:var(--green)">${(t.amount||0).toFixed(8)}</td>
+    <td>${(t.fee||0).toFixed(8)}</td>
+    <td>${t.timestamp?timeAgo(t.timestamp):'—'}</td>
+  </tr>`).join('');
+}
+
+async function loadRacers() {
+  const data = await api('/api/racers');
+  const tbody = document.getElementById('racers-body');
+  if (!data||!data.length) { tbody.innerHTML='<tr><td colspan="6" class="loading">No active racers</td></tr>'; return; }
+  tbody.innerHTML = data.map(r => `<tr>
+    <td>${r.username||'ANON'}</td>
+    <td class="hash">${short(r.address)}</td>
+    <td>${(r.distance_left||0).toFixed(2)}m</td>
+    <td>${(r.power||0).toFixed(1)}W</td>
+    <td>${(r.temp||0).toFixed(1)}°C</td>
+    <td><span class="badge bg-green">${r.status||'racing'}</span></td>
+  </tr>`).join('');
+}
+
+async function loadNetwork() {
+  const data = await api('/api/peers');
+  const tbody = document.getElementById('peers-body');
+  document.getElementById('peer-count').textContent = (data?.count||0)+' connected';
+  const peers = data?.peers||[];
+  if (!peers.length) { tbody.innerHTML='<tr><td colspan="3" class="loading">No peers</td></tr>'; return; }
+  tbody.innerHTML = peers.map((p,i) => `<tr>
+    <td>${i+1}</td>
+    <td class="hash" style="word-break:break-all;font-size:.75rem">${p}</td>
+    <td><span class="badge bg-green">● Connected</span></td>
+  </tr>`).join('');
+}
+
+async function search_() {
+  const q = document.getElementById('search').value.trim();
+  if (!q) return;
+  const rc = document.getElementById('result-card');
+  const rt = document.getElementById('result-title');
+  const rb = document.getElementById('result-body');
+
+  // Try as block height
+  const n = parseInt(q);
+  if (!isNaN(n)) {
+    const b = await api('/api/block?height='+n);
+    if (b && !b.error) {
+      rc.style.display='block';
+      rt.textContent='Block #'+b.height;
+      rb.innerHTML=`
+        <div class="kv"><div class="k">Height</div><div class="v"><strong>#${b.height}</strong></div></div>
+        <div class="kv"><div class="k">Winner</div><div class="v hash">${b.winner}</div></div>
+        <div class="kv"><div class="k">Reward</div><div class="v" style="color:var(--green)">${b.reward?.toFixed(8)} SLK</div></div>
+        <div class="kv"><div class="k">Tier</div><div class="v">${tier(b.tier)}</div></div>
+        <div class="kv"><div class="k">Distance</div><div class="v">${b.distance?.toFixed(6)} m</div></div>
+        <div class="kv"><div class="k">Time</div><div class="v">${b.time?.toFixed(4)} s</div></div>
+        <div class="kv"><div class="k">Hash</div><div class="v hash">${b.hash}</div></div>
+        <div class="kv"><div class="k">Prev Hash</div><div class="v hash">${b.prevhash}</div></div>
+        <div class="kv"><div class="k">Timestamp</div><div class="v">${b.timestamp?new Date(b.timestamp*1000).toUTCString():'—'}</div></div>`;
+      return;
+    }
+  }
+
+  // Try as wallet
+  const wallet = await api('/api/wallet?address='+encodeURIComponent(q));
+  if (wallet && !wallet.error) {
+    rc.style.display='block';
+    rt.textContent='Wallet';
+    rb.innerHTML=`
+      <div class="kv"><div class="k">Address</div><div class="v hash">${q}</div></div>
+      <div style="margin:1rem 0"><div class="big-num">${(wallet.balance||0).toFixed(8)} SLK</div><div style="color:var(--muted);font-size:.8rem">Balance</div></div>
+      <div class="kv"><div class="k">Trophies Mined</div><div class="v">${wallet.trophy_count||0}</div></div>`;
+    return;
+  }
+
+  rc.style.display='block';
+  rt.textContent='Not Found';
+  rb.innerHTML='<div style="color:var(--muted)">No block or wallet found for: '+q+'</div>';
+}
+
+// Auto-refresh every 10s
+refresh();
+setInterval(refresh, 10000);
+</script>
+
+  <!-- GENESIS BLOCK SECTION -->
+  <div class="card" style="margin:2rem auto;max-width:900px;">
+    <div class="card-header">
+      <h3>🏛 SLK Genesis Block — Block #0</h3>
+      <span class="card-sub">The founding block of the SLK blockchain — permanent and immutable</span>
+    </div>
+    <div class="card-body" style="font-family:monospace;font-size:0.85rem;">
+      <div style="background:#111;border:1px solid #333;border-radius:8px;padding:1.5rem;margin-bottom:1rem;">
+        <div style="color:#f7931a;font-size:1.2rem;font-weight:800;margin-bottom:1rem;text-align:center;">
+          ⛓ SLK GENESIS BLOCK — RAW DATA
+        </div>
+        <table style="width:100%;border-collapse:collapse;color:#0f0;">
+          <tr><td style="color:#888;padding:4px 12px 4px 0;white-space:nowrap;">Block Height</td><td style="color:#fff;">#0 (Genesis)</td></tr>
+          <tr><td style="color:#888;padding:4px 12px 4px 0;">Date</td><td style="color:#fff;">2026-04-24</td></tr>
+          <tr><td style="color:#888;padding:4px 12px 4px 0;">Creator</td><td style="color:#fff;">Franklin Mozac</td></tr>
+          <tr><td style="color:#888;padding:4px 12px 4px 0;">Winner</td><td style="color:#fff;">GENESIS</td></tr>
+          <tr><td style="color:#888;padding:4px 12px 4px 0;">Reward</td><td style="color:#fff;">0.00000000 SLK (genesis — no supply reduction)</td></tr>
+          <tr><td style="color:#888;padding:4px 12px 4px 0;">Total Supply</td><td style="color:#fff;">2,000,000,000.00000000 SLK</td></tr>
+          <tr><td style="color:#888;padding:4px 12px 4px 0;">Consensus</td><td style="color:#fff;">Proof of Race — VDF verified</td></tr>
+          <tr><td style="color:#888;padding:4px 12px 4px 0;">Prev Hash</td><td style="color:#fff;">0000000000000000000000000000000000000000000000000000000000000000</td></tr>
+        </table>
+        <div style="margin-top:1.5rem;padding:1rem;background:#0a0a0a;border-left:4px solid #f7931a;border-radius:4px;">
+          <div style="color:#f7931a;font-weight:700;margin-bottom:0.5rem;">📜 EMBEDDED GENESIS MESSAGE:</div>
+          <div style="color:#00ff88;font-size:1rem;font-style:italic;">
+            "SLK — 24/Apr/2026 — Banking for the people, not the banks.<br>
+            The marathon of a thousand miles begins with a single step."
+          </div>
+          <div style="color:#555;font-size:0.75rem;margin-top:0.5rem;">
+            HEX: 534c4b202d2032342f4170722f32303235202d2042616e6b696e6720666f722074686520706f6f706c652c206e6f74207468652062616e6b73
+          </div>
+        </div>
+        <div style="margin-top:1.5rem;">
+          <div style="color:#888;margin-bottom:0.5rem;">RAW HEX DUMP:</div>
+          <div style="color:#0f0;font-size:0.75rem;line-height:1.8;word-break:break-all;">
+            00000000 &nbsp; 01 00 00 00 00 00 00 00 &nbsp; 00 00 00 00 00 00 00 00 &nbsp; ................<br>
+            00000010 &nbsp; 00 00 00 00 00 00 00 00 &nbsp; 00 00 00 00 00 00 00 00 &nbsp; ................<br>
+            00000020 &nbsp; 53 4c 4b 20 47 45 4e 45 &nbsp; 53 49 53 20 42 4c 4f 43 &nbsp; SLK GENESIS BLOC<br>
+            00000030 &nbsp; 4b 20 23 30 20 2d 20 32 &nbsp; 30 32 36 2d 30 34 2d 32 &nbsp; K #0 - 2026-04-2<br>
+            00000040 &nbsp; 34 20 2d 20 46 72 61 6e &nbsp; 6b 6c 69 6e 20 4d 6f 7a &nbsp; 4 - Franklin Moz<br>
+            00000050 &nbsp; 61 63 20 2d 20 42 61 6e &nbsp; 6b 69 6e 67 20 66 6f 72 &nbsp; ac - Banking for<br>
+            00000060 &nbsp; 20 74 68 65 20 70 65 6f &nbsp; 70 6c 65 2c 20 6e 6f 74 &nbsp; the people, not<br>
+            00000070 &nbsp; 20 74 68 65 20 62 61 6e &nbsp; 6b 73 00 00 00 00 00 00 &nbsp; the banks.......<br>
+            00000080 &nbsp; 00 00 00 00 00 00 00 00 &nbsp; 00 00 00 00 00 00 00 00 &nbsp; ................<br>
+            00000090 &nbsp; 50 72 6f 6f 66 20 6f 66 &nbsp; 20 52 61 63 65 20 2d 20 &nbsp; Proof of Race - <br>
+            000000a0 &nbsp; 56 44 46 20 56 65 72 69 &nbsp; 66 69 65 64 20 43 6f 6e &nbsp; VDF Verified Con<br>
+            000000b0 &nbsp; 73 65 6e 73 75 73 00 00 &nbsp; 00 00 00 00 00 00 00 00 &nbsp; sensus..........<br>
+          </div>
+        </div>
+      </div>
+      <div style="text-align:center;color:#555;font-size:0.8rem;">
+        Just like Bitcoin embedded "Chancellor on brink of second bailout for banks" in its genesis block,<br>
+        SLK embeds its founding message permanently on-chain. This cannot be changed or deleted.
+      </div>
+    </div>
+  </div>
+</body>
+</html>

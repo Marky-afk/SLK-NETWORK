@@ -1,16 +1,16 @@
 ; SLK CPU Temperature Reader - x86_64 Linux Assembly
-; Reads /sys/class/thermal/thermal_zone14/temp (x86_pkg_temp - real CPU package temp)
+; Reads /sys/class/thermal/thermal_zone13/temp (x86_pkg_temp - real CPU package temp)
 ; Returns temperature in millidegrees in rax
 
 section .data
-    thermal_path db "/sys/class/thermal/thermal_zone14/temp", 0
+    thermal_path db "/sys/class/thermal/thermal_zone13/temp", 0
     buf          db 16 dup(0)
 
 section .text
     global slk_read_cpu_temp_asm
 
 slk_read_cpu_temp_asm:
-    ; open("/sys/class/thermal/thermal_zone14/temp", O_RDONLY)
+    ; open("/sys/class/thermal/thermal_zone13/temp", O_RDONLY)
     mov rax, 2
     lea rdi, [rel thermal_path]
     xor rsi, rsi

@@ -70,7 +70,8 @@ func calculateReward(tier Tier) float64 {
 	return BlockReward // Always full 0.00800000 SLK
 }
 
-// ComputeHash calculates the SHA-256 hash of the trophy
+// ComputeHash calculates the double SHA-256 hash of the trophy (like Bitcoin)
+// Double hashing makes length-extension attacks mathematically impossible
 func (t *Trophy) ComputeHash() []byte {
 	var buf bytes.Buffer
 
@@ -81,9 +82,12 @@ func (t *Trophy) ComputeHash() []byte {
 	buf.WriteString(t.Winner)
 	binary.Write(&buf, binary.LittleEndian, t.Distance)
 	binary.Write(&buf, binary.LittleEndian, t.FinishTime)
+	buf.WriteString(t.VDFProof)
 
-	hash := sha256.Sum256(buf.Bytes())
-	return hash[:]
+	// Double SHA-256 — same as Bitcoin, prevents length-extension attacks
+	first := sha256.Sum256(buf.Bytes())
+	second := sha256.Sum256(first[:])
+	return second[:]
 }
 
 // TierName returns the string name of the tier

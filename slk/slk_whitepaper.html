@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SLK Network — Whitepaper</title>
+<meta name="description" content="SLK is a decentralized blockchain powered by Proof-of-Race mining with a fixed supply of 2 billion coins. On-chain banking, smart contracts, and real P2P finance.">
+<style>
+:root{--bg:#0a0e1a;--card:#111827;--border:#1e2d45;--accent:#00d4ff;--accent2:#7c3aed;--text:#e2e8f0;--muted:#64748b}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;line-height:1.7}
+nav{background:#0d1525;border-bottom:1px solid var(--border);padding:0 2rem;display:flex;align-items:center;justify-content:space-between;height:60px;position:sticky;top:0;z-index:100}
+.logo{font-size:1.4rem;font-weight:800;color:var(--accent);letter-spacing:2px}
+.logo span{color:var(--accent2)}
+.nav-links{display:flex;gap:1.5rem}
+.nav-links a{color:var(--muted);text-decoration:none;font-size:.9rem}
+.nav-links a:hover{color:var(--accent)}
+.hero{text-align:center;padding:6rem 2rem 4rem;background:radial-gradient(ellipse at 50% 0%,#0d2040 0%,var(--bg) 70%)}
+.hero h1{font-size:3rem;font-weight:900;line-height:1.1;margin-bottom:1rem}
+.hero h1 span{background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero p{font-size:1.15rem;color:var(--muted);max-width:650px;margin:0 auto 2rem}
+.btn{padding:.75rem 2rem;border-radius:8px;font-weight:700;cursor:pointer;border:none;text-decoration:none;display:inline-block;margin:.3rem}
+.btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+.btn-outline{background:transparent;color:var(--accent);border:2px solid var(--accent)}
+.section{padding:4rem 2rem;max-width:900px;margin:0 auto}
+.section h2{font-size:1.8rem;font-weight:800;margin-bottom:.5rem;color:var(--accent)}
+.section h3{font-size:1.2rem;font-weight:700;margin:2rem 0 .5rem}
+.section p{color:#cbd5e1;margin-bottom:1rem}
+.section ul{color:#cbd5e1;padding-left:1.5rem;margin-bottom:1rem}
+.section ul li{margin-bottom:.4rem}
+.divider{border:none;border-top:1px solid var(--border);margin:3rem 0}
+.highlight{background:var(--card);border-left:4px solid var(--accent);border-radius:0 8px 8px 0;padding:1rem 1.5rem;margin:1.5rem 0}
+.highlight p{margin:0;color:var(--text)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin:1.5rem 0}
+.grid-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:1.2rem;text-align:center}
+.grid-card .val{font-size:1.3rem;font-weight:800;color:var(--accent)}
+.grid-card .lbl{font-size:.8rem;color:var(--muted);margin-top:.3rem}
+.toc{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:1.5rem;margin-bottom:3rem}
+.toc h3{margin-bottom:1rem;color:var(--accent)}
+.toc ol{padding-left:1.5rem}
+.toc li{margin-bottom:.4rem}
+.toc a{color:var(--muted);text-decoration:none;font-size:.9rem}
+.toc a:hover{color:var(--accent)}
+footer{background:#0d1525;border-top:1px solid var(--border);padding:2rem;text-align:center;color:var(--muted);font-size:.85rem;margin-top:4rem}
+footer a{color:var(--accent);text-decoration:none}
+code{background:var(--card);border:1px solid var(--border);border-radius:4px;padding:.1rem .4rem;font-family:monospace;font-size:.85em;color:var(--accent)}
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo">SLK<span>◆</span>NETWORK</div>
+  <div class="nav-links">
+    <a href="#abstract">Abstract</a>
+    <a href="#mining">Mining</a>
+    <a href="#banking">Banking</a>
+    <a href="#tokenomics">Tokenomics</a>
+    <a href="#security">Security</a>
+    <a href="#roadmap">Roadmap</a>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1>SLK Network<br><span>Whitepaper v1.0</span></h1>
+  <p>A decentralized financial system powered by Proof-of-Race consensus, on-chain banking, smart contracts, and a fixed supply of 2,000,000,000 SLK.</p>
+  <a class="btn btn-primary" href="#abstract">Read Whitepaper</a>
+  <a class="btn btn-outline" href="slk_explorer.html">Block Explorer</a>
+</div>
+
+<div class="section">
+  <div class="toc">
+    <h3>Table of Contents</h3>
+    <ol>
+      <li><a href="#abstract">Abstract</a></li>
+      <li><a href="#problem">The Problem</a></li>
+      <li><a href="#mining">Proof-of-Race Consensus</a></li>
+      <li><a href="#network">P2P Network Architecture</a></li>
+      <li><a href="#utxo">UTXO Model & Transactions</a></li>
+      <li><a href="#banking">On-Chain Banking System</a></li>
+      <li><a href="#contracts">Smart Contracts</a></li>
+      <li><a href="#tokenomics">Tokenomics</a></li>
+      <li><a href="#security">Security Model</a></li>
+      <li><a href="#governance">Governance</a></li>
+      <li><a href="#identity">Decentralized Identity</a></li>
+      <li><a href="#roadmap">Roadmap</a></li>
+    </ol>
+  </div>
+
+  <h2 id="abstract">1. Abstract</h2>
+  <p>SLK is a peer-to-peer decentralized financial system built on a novel consensus mechanism called Proof-of-Race (PoR). Unlike Proof-of-Work which wastes energy on arbitrary computation, SLK mining is tied to physics-based race simulations using Poisson processes, Lorenz attractors, and SHA3-256 verification — making every mined block the result of real deterministic effort.</p>
+  <p>SLK combines a fixed-supply blockchain with a complete financial ecosystem: commercial banks, reserve banks, loans, escrow, multi-signature wallets, time-locked transactions, recurring payments, smart contracts, and on-chain governance — all running on a real libp2p P2P network with Kademlia DHT discovery.</p>
+  <div class="highlight"><p>"SLK treats money as math. Every coin is traceable to its origin block. Every transaction is cryptographically signed. No inflation. No central authority. No exceptions."</p></div>
+
+  <hr class="divider">
+  <h2 id="problem">2. The Problem</h2>
+  <p>The global financial system excludes billions of people. Traditional banking requires documentation, credit history, and physical presence. Bitcoin solved digital scarcity but created a mining arms race that wastes electricity. Ethereum introduced smart contracts but gas fees make small transactions impractical.</p>
+  <p>SLK solves this differently:</p>
+  <ul>
+    <li>Mining requires computation but not wasteful hashing — Proof-of-Race has a natural difficulty ceiling</li>
+    <li>On-chain banking means anyone with a phone can create or use a bank</li>
+    <li>Fixed supply of 2 billion SLK ensures no inflation ever dilutes holdings</li>
+    <li>Smart contracts execute automatically with zero gas fees between peers</li>
+  </ul>
+
+  <hr class="divider">
+  <h2 id="mining">3. Proof-of-Race Consensus</h2>
+  <p>Each block in the SLK chain is called a <strong>Trophy</strong>. Trophies are earned by winning a physics-based race simulation. The race uses:</p>
+  <ul>
+    <li><strong>Poisson processes</strong> — random events model real-world race variance</li>
+    <li><strong>Lorenz attractor dynamics</strong> — chaotic but deterministic physics engine</li>
+    <li><strong>VDF (Verifiable Delay Function)</strong> — proves elapsed real time, preventing instant fake wins</li>
+    <li><strong>SHA3-256 verification</strong> — each trophy hash is verifiable by any node</li>
+  </ul>
+  <h3>Reward Tiers</h3>
+  <ul>
+    <li>🥇 <strong>Gold</strong> — finish within target time: full 0.008 SLK reward</li>
+    <li>🥈 <strong>Silver</strong> — finish within 130% of target: 0.0056 SLK</li>
+    <li>🥉 <strong>Bronze</strong> — any finish: 0.0032 SLK</li>
+  </ul>
+  <h3>Block Hashing</h3>
+  <p>SLK uses double SHA-256 on all block hashes — identical to Bitcoin — making length-extension attacks mathematically impossible. Each block includes the previous block hash, winner address, race distance, finish time, and VDF proof.</p>
+
+  <hr class="divider">
+  <h2 id="network">4. P2P Network Architecture</h2>
+  <p>SLK runs on <code>libp2p</code> with Kademlia DHT peer discovery. Every node is equal — there are no master nodes or validators. The network uses GossipSub for message propagation with the following topics:</p>
+  <ul>
+    <li><code>slk-trophies</code> — new blocks broadcast instantly to all peers</li>
+    <li><code>slk-transactions</code> — mempool transactions</li>
+    <li><code>slk-bank-records</code> — bank deposits, loans, transfers</li>
+    <li><code>slk-social-feed</code> — decentralized social layer</li>
+    <li><code>slk-exchange-orders</code> — P2P exchange order book</li>
+  </ul>
+  <p>All messages are capped at 64KB. Rate limiting prevents spam. New nodes sync the full chain from peers on startup via the <code>/slk/chainsync/1.0.0</code> protocol.</p>
+
+  <hr class="divider">
+  <h2 id="utxo">5. UTXO Model & Transactions</h2>
+  <p>SLK uses the Unspent Transaction Output (UTXO) model — every coin is traceable to the trophy block that created it. Double-spend protection is enforced at the UTXO level: once an output is spent, it cannot be spent again.</p>
+  <p>Transaction signing uses <strong>Ed25519</strong> — 128-bit security level. Breaking a single key would require more computation than exists in the observable universe. All transactions include sender, recipient, amount, fee, timestamp, Ed25519 signature, and public key.</p>
+  <p>The mempool enforces: positive amounts, valid addresses, no self-sends, replay attack protection (10-minute window), per-sender rate limiting (100 pending max), and total size cap (10,000 transactions).</p>
+
+  <hr class="divider">
+  <h2 id="banking">6. On-Chain Banking System</h2>
+  <p>Any SLK holder can create a bank. Two bank types exist:</p>
+  <h3>Commercial Banks</h3>
+  <p>Issue a custom currency backed 1:1 by locked SLK. Set exchange rates, fee basis points, and interest rates. Accept deposits from other network participants. Earn fees on every transaction. Broadcast their existence to all peers.</p>
+  <h3>Reserve Banks</h3>
+  <p>Lock SLK as reserves and issue currency up to a reserve ratio. Function like real central banks — control monetary supply, set lending rates, earn seigniorage. Reserve banks can lend to commercial banks.</p>
+  <h3>Banking Features</h3>
+  <ul>
+    <li>Deposits with compound interest</li>
+    <li>Peer-to-peer loans with configurable terms</li>
+    <li>B2B transfers between banks</li>
+    <li>Currency exchange at market rates</li>
+    <li>Website API for external integration</li>
+  </ul>
+
+  <hr class="divider">
+  <h2 id="contracts">7. Smart Contracts</h2>
+  <p>SLK smart contracts are programmable conditions on transactions. Six contract types are supported:</p>
+  <ul>
+    <li><strong>Escrow</strong> — funds released when both parties confirm</li>
+    <li><strong>Vesting</strong> — funds released linearly over time (employee salaries, investor lockups)</li>
+    <li><strong>MultiSig</strong> — N-of-M signatures required (company treasuries)</li>
+    <li><strong>Conditional</strong> — funds released when creator marks condition met</li>
+    <li><strong>Savings</strong> — lock SLK until savings target reached</li>
+    <li><strong>Will</strong> — release to beneficiary after inactivity period</li>
+  </ul>
+  <p>Contracts execute automatically every 30 seconds. Locked SLK is deducted immediately on creation. Cancelled contracts return funds to creator. All executions are recorded as transactions and broadcast to the network.</p>
+
+  <hr class="divider">
+  <h2 id="tokenomics">8. Tokenomics</h2>
+  <div class="grid">
+    <div class="grid-card"><div class="val">2,000,000,000</div><div class="lbl">Hard Cap Supply</div></div>
+    <div class="grid-card"><div class="val">0.008 SLK</div><div class="lbl">Block Reward</div></div>
+    <div class="grid-card"><div class="val">250B Blocks</div><div class="lbl">To Mine All SLK</div></div>
+    <div class="grid-card"><div class="val">8 Decimals</div><div class="lbl">Precision</div></div>
+    <div class="grid-card"><div class="val">0%</div><div class="lbl">Pre-mine</div></div>
+    <div class="grid-card"><div class="val">0%</div><div class="lbl">Inflation</div></div>
+  </div>
+  <p>There is no pre-mine, no founder allocation, no ICO. Every SLK in existence was earned by winning a race. The supply is mathematically fixed — no code path can ever create SLK outside of the mining reward.</p>
+
+  <hr class="divider">
+  <h2 id="security">9. Security Model</h2>
+  <ul>
+    <li><strong>Ed25519 signatures</strong> — 128-bit security, quantum-resistant for foreseeable future</li>
+    <li><strong>Double SHA-256 blocks</strong> — length-extension attacks impossible</li>
+    <li><strong>Merkle trees</strong> — transaction inclusion provable without full chain download</li>
+    <li><strong>Atomic disk writes</strong> — power failure cannot corrupt chain state</li>
+    <li><strong>Replay protection</strong> — 10-minute transaction window prevents replay attacks</li>
+    <li><strong>P2P rate limiting</strong> — 64KB message cap, 100 tx/sender mempool limit</li>
+    <li><strong>UTXO double-spend protection</strong> — every output tracked, spent outputs rejected</li>
+    <li><strong>Integer arithmetic</strong> — all amounts stored as nanoSLK (int64) preventing float rounding</li>
+  </ul>
+
+  <hr class="divider">
+  <h2 id="governance">10. Governance</h2>
+  <p>Protocol changes require an on-chain governance vote. Any holder with 10+ SLK can submit a proposal. Voting weight equals SLK balance. Proposals pass by simple majority within the voting window. A time-lock delay between passing and activation gives the network time to upgrade.</p>
+
+  <hr class="divider">
+  <h2 id="identity">11. Decentralized Identity</h2>
+  <p>Businesses, NGOs, and governments can register a verified identity on-chain. Registration is voluntary and stores organisation name, type, registration number, and website. Verified wallets display a badge visible to all network participants, enabling trust without a central authority.</p>
+
+  <hr class="divider">
+  <h2 id="roadmap">12. Roadmap</h2>
+  <h3>Phase 1 — Foundation (Complete ✅)</h3>
+  <ul>
+    <li>Proof-of-Race blockchain core</li>
+    <li>libp2p P2P network with DHT</li>
+    <li>UTXO model with Ed25519 signatures</li>
+    <li>Desktop wallet application (Fyne)</li>
+    <li>On-chain banking (Commercial + Reserve)</li>
+  </ul>
+  <h3>Phase 2 — Finance Layer (Complete ✅)</h3>
+  <ul>
+    <li>Multi-signature wallets</li>
+    <li>Time-locked transactions</li>
+    <li>Recurring payments</li>
+    <li>Smart contracts (6 types)</li>
+    <li>P2P exchange order book</li>
+    <li>On-chain governance</li>
+  </ul>
+  <h3>Phase 3 — Growth (In Progress)</h3>
+  <ul>
+    <li>Mobile wallet (Android/iOS)</li>
+    <li>Public block explorer hosting</li>
+    <li>Exchange listings</li>
+    <li>Developer SDK</li>
+    <li>Bank website API documentation</li>
+  </ul>
+  <h3>Phase 4 — Scale</h3>
+  <ul>
+    <li>Layer 2 payment channels</li>
+    <li>Cross-chain bridge</li>
+    <li>Institutional bank integrations</li>
+    <li>Government sovereign bank support</li>
+  </ul>
+</div>
+
+<footer>
+  <div style="margin-bottom:.5rem"><strong style="color:var(--accent)">SLK Network</strong> — Decentralized Financial System</div>
+  <div>Whitepaper v1.0 | Proof-of-Race | Ed25519 | libp2p | Double SHA-256</div>
+  <div style="margin-top:.5rem">
+    <a href="slk_explorer.html">Block Explorer</a> &nbsp;|&nbsp;
+    <a href="slk_website.html">Homepage</a>
+  </div>
+</footer>
+</body>
+</html>

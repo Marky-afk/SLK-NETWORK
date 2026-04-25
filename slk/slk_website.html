@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SLK Network — Decentralized Financial System</title>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --card: #111827;
+    --border: #1e2d45;
+    --accent: #00d4ff;
+    --accent2: #7c3aed;
+    --gold: #f59e0b;
+    --green: #10b981;
+    --red: #ef4444;
+    --text: #e2e8f0;
+    --muted: #64748b;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; }
+
+  /* NAV */
+  nav { background:#0d1525; border-bottom:1px solid var(--border); padding:0 2rem;
+        display:flex; align-items:center; justify-content:space-between; height:60px; position:sticky; top:0; z-index:100; }
+  .logo { font-size:1.4rem; font-weight:800; color:var(--accent); letter-spacing:2px; }
+  .logo span { color:var(--accent2); }
+  .nav-links { display:flex; gap:1.5rem; }
+  .nav-links a { color:var(--muted); text-decoration:none; font-size:.9rem; cursor:pointer; transition:color .2s; }
+  .nav-links a:hover, .nav-links a.active { color:var(--accent); }
+  .live-dot { width:8px; height:8px; background:var(--green); border-radius:50%;
+              display:inline-block; margin-right:6px; animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  /* PAGES */
+  .page { display:none; }
+  .page.active { display:block; }
+
+  /* HERO */
+  .hero { text-align:center; padding:5rem 2rem 3rem; background:radial-gradient(ellipse at 50% 0%, #0d2040 0%, var(--bg) 70%); }
+  .hero h1 { font-size:3.5rem; font-weight:900; line-height:1.1; margin-bottom:1rem; }
+  .hero h1 span { background:linear-gradient(135deg,var(--accent),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .hero p { font-size:1.2rem; color:var(--muted); max-width:600px; margin:0 auto 2rem; }
+  .hero-btns { display:flex; gap:1rem; justify-content:center; flex-wrap:wrap; }
+  .btn { padding:.75rem 2rem; border-radius:8px; font-weight:700; font-size:1rem; cursor:pointer; border:none; transition:all .2s; text-decoration:none; display:inline-block; }
+  .btn-primary { background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; }
+  .btn-primary:hover { transform:translateY(-2px); box-shadow:0 8px 25px rgba(0,212,255,.3); }
+  .btn-outline { background:transparent; color:var(--accent); border:2px solid var(--accent); }
+  .btn-outline:hover { background:var(--accent); color:#000; }
+
+  /* STATS BAR */
+  .stats-bar { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:1px;
+               background:var(--border); border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
+  .stat-item { background:var(--card); padding:1.2rem; text-align:center; }
+  .stat-value { font-size:1.6rem; font-weight:800; color:var(--accent); }
+  .stat-label { font-size:.75rem; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-top:.2rem; }
+
+  /* FEATURES */
+  .section { padding:4rem 2rem; max-width:1200px; margin:0 auto; }
+  .section-title { font-size:2rem; font-weight:800; margin-bottom:.5rem; }
+  .section-sub { color:var(--muted); margin-bottom:2.5rem; }
+  .grid-3 { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1.5rem; }
+  .feature-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:1.5rem; transition:border-color .2s; }
+  .feature-card:hover { border-color:var(--accent); }
+  .feature-icon { font-size:2rem; margin-bottom:1rem; }
+  .feature-card h3 { font-size:1.1rem; margin-bottom:.5rem; }
+  .feature-card p { color:var(--muted); font-size:.9rem; line-height:1.6; }
+
+  /* EXPLORER */
+  .explorer-bar { background:var(--card); border-bottom:1px solid var(--border); padding:1rem 2rem; display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }
+  .search-box { flex:1; min-width:200px; background:#0a0e1a; border:1px solid var(--border); border-radius:8px;
+                padding:.6rem 1rem; color:var(--text); font-size:.9rem; outline:none; }
+  .search-box:focus { border-color:var(--accent); }
+  .search-btn { background:var(--accent); color:#000; border:none; border-radius:8px; padding:.6rem 1.2rem; font-weight:700; cursor:pointer; }
+
+  .explorer-grid { display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; padding:1.5rem 2rem; max-width:1400px; margin:0 auto; }
+  @media(max-width:900px){ .explorer-grid { grid-template-columns:1fr; } }
+
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+  .card-header { padding:1rem 1.2rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+  .card-header h3 { font-size:1rem; font-weight:700; }
+  .card-body { padding:0; }
+
+  table { width:100%; border-collapse:collapse; font-size:.85rem; }
+  th { background:#0d1525; padding:.7rem 1rem; text-align:left; color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.5px; }
+  td { padding:.7rem 1rem; border-bottom:1px solid var(--border); }
+  tr:last-child td { border-bottom:none; }
+  tr:hover td { background:rgba(255,255,255,.02); }
+  .hash { font-family:monospace; color:var(--accent); font-size:.8rem; }
+  .badge { padding:.2rem .6rem; border-radius:20px; font-size:.75rem; font-weight:700; }
+  .badge-gold { background:rgba(245,158,11,.15); color:var(--gold); }
+  .badge-silver { background:rgba(148,163,184,.15); color:#94a3b8; }
+  .badge-bronze { background:rgba(180,83,9,.15); color:#b45309; }
+  .badge-green { background:rgba(16,185,129,.15); color:var(--green); }
+
+  /* WALLET LOOKUP */
+  .wallet-result { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:1.5rem; margin:1rem 2rem; display:none; }
+  .wallet-balance { font-size:2.5rem; font-weight:900; color:var(--accent); }
+
+  /* LOADING */
+  .loading { text-align:center; padding:2rem; color:var(--muted); }
+  .spinner { display:inline-block; width:20px; height:20px; border:2px solid var(--border);
+             border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; margin-right:.5rem; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* TOKENOMICS */
+  .tokenomics { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; }
+  .token-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:1.2rem; text-align:center; }
+  .token-card .value { font-size:1.4rem; font-weight:800; color:var(--accent); }
+  .token-card .label { font-size:.8rem; color:var(--muted); margin-top:.3rem; }
+
+  /* FOOTER */
+  footer { background:#0d1525; border-top:1px solid var(--border); padding:2rem; text-align:center; color:var(--muted); font-size:.85rem; margin-top:4rem; }
+  footer a { color:var(--accent); text-decoration:none; }
+
+  .online { color:var(--green); font-weight:700; }
+  .offline { color:var(--red); font-weight:700; }
+  .addr { font-family:monospace; font-size:.8rem; color:var(--muted); }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">SLK<span>◆</span>NETWORK</div>
+  <div class="nav-links">
+    <a onclick="showPage('home')" class="active" id="nav-home">Home</a>
+    <a onclick="showPage('explorer')" id="nav-explorer">Explorer</a>
+    <a onclick="showPage('wallet')" id="nav-wallet">Wallet</a>
+    <a onclick="showPage('network')" id="nav-network">Network</a>
+  </div>
+  <div style="font-size:.85rem"><span class="live-dot"></span><span id="node-status" class="offline">Connecting...</span></div>
+</nav>
+
+<!-- ═══════════════ HOME PAGE ═══════════════ -->
+<div class="page active" id="page-home">
+  <div class="hero">
+    <h1>The <span>Decentralized</span><br>Financial System</h1>
+    <p>SLK is a real blockchain powered by Proof-of-Race mining. Fixed supply. Real P2P network. Banks, loans, escrow — all on-chain.</p>
+    <div class="hero-btns">
+      <a class="btn btn-primary" onclick="showPage('explorer')">🔍 Explore Blocks</a>
+      <a class="btn btn-outline" onclick="showPage('wallet')">💼 Check Wallet</a>
+    </div>
+  </div>
+
+  <div class="stats-bar" id="stats-bar">
+    <div class="stat-item"><div class="stat-value" id="stat-height">—</div><div class="stat-label">Block Height</div></div>
+    <div class="stat-item"><div class="stat-value" id="stat-supply">—</div><div class="stat-label">SLK Mined</div></div>
+    <div class="stat-item"><div class="stat-value" id="stat-remaining">—</div><div class="stat-label">SLK Remaining</div></div>
+    <div class="stat-item"><div class="stat-value" id="stat-peers">—</div><div class="stat-label">Live Peers</div></div>
+    <div class="stat-item"><div class="stat-value" id="stat-node">—</div><div class="stat-label">Your Balance</div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Why SLK?</div>
+    <div class="section-sub">Built different from the ground up</div>
+    <div class="grid-3">
+      <div class="feature-card">
+        <div class="feature-icon">⛏️</div>
+        <h3>Proof of Race Mining</h3>
+        <p>Mine SLK by running physics-based races. Real computational work. No wasteful hashing — every block represents real effort.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🏦</div>
+        <h3>On-Chain Banking</h3>
+        <p>Create Commercial and Reserve banks powered by SLK. Issue currencies, earn fees, offer loans and deposits — all decentralized.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔐</div>
+        <h3>Multi-Signature Wallets</h3>
+        <p>Require multiple signatures to move funds. 2-of-3, 3-of-5 — perfect for businesses and shared treasuries.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">⏰</div>
+        <h3>Time-Locked Transactions</h3>
+        <p>Lock SLK until a future date. Send inheritance, vesting schedules, or savings that unlock automatically.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🗳️</div>
+        <h3>On-Chain Governance</h3>
+        <p>Vote on protocol changes with your SLK balance. Every holder has a voice. Proposals pass by stake-weighted majority.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌍</div>
+        <h3>True Decentralization</h3>
+        <p>No company controls SLK. libp2p + Kademlia DHT ensures the network survives even if any single node goes offline.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Tokenomics</div>
+    <div class="section-sub">Fixed supply. No inflation. Ever.</div>
+    <div class="tokenomics">
+      <div class="token-card"><div class="value">2,000,000,000</div><div class="label">Total Supply (Hard Cap)</div></div>
+      <div class="token-card"><div class="value">0.008 SLK</div><div class="label">Block Reward</div></div>
+      <div class="token-card"><div class="value">Ed25519</div><div class="label">Cryptography</div></div>
+      <div class="token-card"><div class="value">Double SHA-256</div><div class="label">Block Hashing</div></div>
+      <div class="token-card"><div class="value">UTXO</div><div class="label">Transaction Model</div></div>
+      <div class="token-card"><div class="value">libp2p</div><div class="label">P2P Network</div></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">🏆 Latest Blocks</div>
+    <div class="section-sub">Most recent trophies mined on the network</div>
+    <div class="card">
+      <div class="card-body">
+        <table>
+          <thead><tr><th>Height</th><th>Winner</th><th>Reward</th><th>Tier</th><th>Hash</th></tr></thead>
+          <tbody id="home-blocks"><tr><td colspan="5" class="loading"><span class="spinner"></span>Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ EXPLORER PAGE ═══════════════ -->
+<div class="page" id="page-explorer">
+  <div class="explorer-bar">
+    <input class="search-box" id="search-input" placeholder="Search by block height or wallet address..." onkeydown="if(event.key==='Enter')doSearch()">
+    <button class="search-btn" onclick="doSearch()">Search</button>
+  </div>
+  <div class="wallet-result" id="wallet-result">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem">
+      <div>
+        <div style="color:var(--muted);font-size:.85rem;margin-bottom:.3rem">Wallet Address</div>
+        <div class="hash" id="wr-addr" style="font-size:1rem"></div>
+      </div>
+      <div style="text-align:right">
+        <div style="color:var(--muted);font-size:.85rem;margin-bottom:.3rem">Balance</div>
+        <div class="wallet-balance" id="wr-balance"></div>
+        <div style="color:var(--muted);font-size:.85rem" id="wr-trophies"></div>
+      </div>
+    </div>
+  </div>
+  <div class="explorer-grid">
+    <div class="card">
+      <div class="card-header"><h3>⛏️ Latest Blocks</h3><span id="block-count" style="color:var(--muted);font-size:.85rem"></span></div>
+      <div class="card-body">
+        <table>
+          <thead><tr><th>Height</th><th>Winner</th><th>Reward</th><th>Tier</th><th>Hash</th></tr></thead>
+          <tbody id="blocks-table"><tr><td colspan="5" class="loading"><span class="spinner"></span>Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>🏆 Leaderboard</h3><span style="color:var(--muted);font-size:.85rem">Top miners</span></div>
+      <div class="card-body">
+        <table>
+          <thead><tr><th>Rank</th><th>Address</th><th>Trophies</th><th>SLK Earned</th></tr></thead>
+          <tbody id="leaderboard-table"><tr><td colspan="4" class="loading"><span class="spinner"></span>Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>📬 Mempool</h3><span id="mempool-count" style="color:var(--muted);font-size:.85rem"></span></div>
+      <div class="card-body">
+        <table>
+          <thead><tr><th>TX ID</th><th>From</th><th>To</th><th>Amount</th></tr></thead>
+          <tbody id="mempool-table"><tr><td colspan="4" class="loading"><span class="spinner"></span>Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>🏎️ Live Racers</h3><span style="color:var(--muted);font-size:.85rem">Currently mining</span></div>
+      <div class="card-body">
+        <table>
+          <thead><tr><th>Racer</th><th>Distance Left</th><th>Power</th><th>Status</th></tr></thead>
+          <tbody id="racers-table"><tr><td colspan="4" class="loading"><span class="spinner"></span>Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ WALLET PAGE ═══════════════ -->
+<div class="page" id="page-wallet">
+  <div class="section" style="max-width:700px">
+    <div class="section-title">💼 Wallet Lookup</div>
+    <div class="section-sub">Check any wallet balance and trophy history</div>
+    <div style="display:flex;gap:1rem;margin-bottom:1.5rem">
+      <input class="search-box" id="wallet-input" placeholder="Enter wallet address (SLKB-xxx...)" onkeydown="if(event.key==='Enter')lookupWallet()">
+      <button class="search-btn" onclick="lookupWallet()">Lookup</button>
+    </div>
+    <div class="card" id="wallet-card" style="display:none">
+      <div class="card-header"><h3>Wallet Details</h3></div>
+      <div style="padding:1.5rem">
+        <div style="color:var(--muted);font-size:.85rem">Address</div>
+        <div class="hash" id="wc-addr" style="font-size:.95rem;margin-bottom:1rem;word-break:break-all"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+          <div class="token-card"><div class="value" id="wc-balance">—</div><div class="label">SLK Balance</div></div>
+          <div class="token-card"><div class="value" id="wc-trophies">—</div><div class="label">Trophies Mined</div></div>
+        </div>
+      </div>
+    </div>
+    <div id="wallet-error" style="display:none;color:var(--red);padding:1rem"></div>
+
+    <div style="margin-top:3rem">
+      <div class="section-title" style="font-size:1.3rem">🖥️ Your Node</div>
+      <div class="card" style="margin-top:1rem">
+        <div style="padding:1.5rem">
+          <div style="color:var(--muted);font-size:.85rem">Node Address</div>
+          <div class="hash" id="node-addr" style="margin-bottom:1rem;word-break:break-all">—</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem">
+            <div class="token-card"><div class="value" id="node-balance">—</div><div class="label">Balance</div></div>
+            <div class="token-card"><div class="value" id="node-peers">—</div><div class="label">Peers</div></div>
+            <div class="token-card"><div class="value" id="node-height">—</div><div class="label">Height</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ NETWORK PAGE ═══════════════ -->
+<div class="page" id="page-network">
+  <div class="section">
+    <div class="section-title">🌐 Network Status</div>
+    <div class="section-sub">Live view of the SLK P2P network</div>
+    <div class="grid-3" style="margin-bottom:2rem">
+      <div class="token-card"><div class="value" id="net-peers">—</div><div class="label">Connected Peers</div></div>
+      <div class="token-card"><div class="value" id="net-height">—</div><div class="label">Chain Height</div></div>
+      <div class="token-card"><div class="value" id="net-mempool">—</div><div class="label">Pending TXs</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>Connected Peers</h3></div>
+      <div class="card-body">
+        <table>
+          <thead><tr><th>#</th><th>Peer ID</th><th>Status</th></tr></thead>
+          <tbody id="peers-table"><tr><td colspan="3" class="loading"><span class="spinner"></span>Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div style="margin-bottom:.5rem"><strong style="color:var(--accent)">SLK Network</strong> — Decentralized Financial System</div>
+  <div>Powered by Proof-of-Race • Ed25519 • libp2p • Double SHA-256</div>
+  <div style="margin-top:.5rem">Node API: <a href="http://localhost:8080/api/stats" target="_blank">localhost:8080</a></div>
+</footer>
+
+<script>
+const API = 'http://localhost:8080';
+let nodeOnline = false;
+
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-links a').forEach(a => a.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  document.getElementById('nav-' + name).classList.add('active');
+  if (name === 'explorer') loadExplorer();
+  if (name === 'network') loadNetwork();
+}
+
+async function api(endpoint) {
+  try {
+    const r = await fetch(API + endpoint);
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+function shortAddr(addr) {
+  if (!addr || addr.length < 12) return addr;
+  return addr.slice(0,10) + '...' + addr.slice(-6);
+}
+
+function shortHash(h) {
+  if (!h || h.length < 12) return h;
+  return h.slice(0,12) + '...';
+}
+
+function tierBadge(tier) {
+  if (tier === 'Gold')   return '<span class="badge badge-gold">🥇 Gold</span>';
+  if (tier === 'Silver') return '<span class="badge badge-silver">🥈 Silver</span>';
+  return '<span class="badge badge-bronze">🥉 Bronze</span>';
+}
+
+async function loadStats() {
+  const s = await api('/api/stats');
+  if (!s) {
+    document.getElementById('node-status').textContent = 'Node Offline';
+    document.getElementById('node-status').className = 'offline';
+    nodeOnline = false;
+    return;
+  }
+  nodeOnline = true;
+  document.getElementById('node-status').textContent = 'Node Online';
+  document.getElementById('node-status').className = 'online';
+
+  const TOTAL_SUPPLY = 2000000000.00000000;
+  const BLOCK_REWARD = 0.00800000;
+  const mined = ((s.height||0) * BLOCK_REWARD).toFixed(8);
+  const remaining = (TOTAL_SUPPLY - parseFloat(mined)).toFixed(8);
+
+  document.getElementById('stat-height').textContent = s.height?.toLocaleString() ?? '—';
+  document.getElementById('stat-supply').textContent = parseFloat(mined).toLocaleString();
+  document.getElementById('stat-remaining').textContent = parseFloat(remaining).toLocaleString();
+  document.getElementById('stat-peers').textContent = s.peers ?? '—';
+  document.getElementById('stat-node').textContent = (s.my_balance ?? 0).toFixed(4) + ' SLK';
+
+  document.getElementById('node-addr').textContent = s.my_address ?? '—';
+  document.getElementById('node-balance').textContent = (s.my_balance ?? 0).toFixed(4) + ' SLK';
+  document.getElementById('node-peers').textContent = s.peers ?? '—';
+  document.getElementById('node-height').textContent = s.height?.toLocaleString() ?? '—';
+  document.getElementById('net-peers').textContent = s.peers ?? '—';
+  document.getElementById('net-height').textContent = s.height?.toLocaleString() ?? '—';
+}
+
+async function loadHomeBlocks() {
+  const trophies = await api('/api/trophies');
+  const tbody = document.getElementById('home-blocks');
+  if (!trophies || !trophies.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);text-align:center;padding:1.5rem">No blocks yet — start mining!</td></tr>';
+    return;
+  }
+  const recent = [...trophies].reverse().slice(0, 10);
+  tbody.innerHTML = recent.map(t => `
+    <tr>
+      <td><strong>#${t.height}</strong></td>
+      <td class="addr">${shortAddr(t.winner)}</td>
+      <td style="color:var(--green)">${t.reward.toFixed(8)}</td>
+      <td>${tierBadge(t.tier)}</td>
+      <td class="hash">${shortHash(t.hash)}</td>
+    </tr>`).join('');
+}
+
+async function loadExplorer() {
+  const [trophies, leaderboard, mempool, racers] = await Promise.all([
+    api('/api/trophies'), api('/api/leaderboard'), api('/api/mempool'), api('/api/racers')
+  ]);
+
+  // Blocks
+  const bt = document.getElementById('blocks-table');
+  if (trophies && trophies.length) {
+    document.getElementById('block-count').textContent = trophies.length + ' blocks';
+    const recent = [...trophies].reverse().slice(0, 20);
+    bt.innerHTML = recent.map(t => `
+      <tr>
+        <td><strong>#${t.height}</strong></td>
+        <td class="addr">${shortAddr(t.winner)}</td>
+        <td style="color:var(--green)">${t.reward.toFixed(8)}</td>
+        <td>${tierBadge(t.tier)}</td>
+        <td class="hash">${shortHash(t.hash)}</td>
+      </tr>`).join('');
+  } else {
+    bt.innerHTML = '<tr><td colspan="5" style="color:var(--muted);text-align:center;padding:1.5rem">No blocks yet</td></tr>';
+  }
+
+  // Leaderboard
+  const lt = document.getElementById('leaderboard-table');
+  if (leaderboard && leaderboard.length) {
+    lt.innerHTML = leaderboard.slice(0,10).map((e,i) => `
+      <tr>
+        <td><strong>${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+(i+1)}</strong></td>
+        <td class="addr">${shortAddr(e.address)}</td>
+        <td>${e.trophies}</td>
+        <td style="color:var(--green)">${e.balance.toFixed(4)}</td>
+      </tr>`).join('');
+  } else {
+    lt.innerHTML = '<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1.5rem">No miners yet</td></tr>';
+  }
+
+  // Mempool
+  const mt = document.getElementById('mempool-table');
+  const txs = mempool?.txs ?? [];
+  document.getElementById('mempool-count').textContent = (txs.length || 0) + ' pending';
+  if (txs.length) {
+    mt.innerHTML = txs.slice(0,10).map(t => `
+      <tr>
+        <td class="hash">${t.id ? t.id.slice(0,10)+'...' : '—'}</td>
+        <td class="addr">${shortAddr(t.from)}</td>
+        <td class="addr">${shortAddr(t.to)}</td>
+        <td style="color:var(--green)">${(t.amount||0).toFixed(8)}</td>
+      </tr>`).join('');
+  } else {
+    mt.innerHTML = '<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1.5rem">Mempool empty</td></tr>';
+  }
+
+  // Racers
+  const rt = document.getElementById('racers-table');
+  if (racers && racers.length) {
+    rt.innerHTML = racers.map(r => `
+      <tr>
+        <td>${r.username || shortAddr(r.address)}</td>
+        <td>${(r.distance_left||0).toFixed(2)}m</td>
+        <td>${(r.power||0).toFixed(1)}W</td>
+        <td><span class="badge badge-green">${r.status||'racing'}</span></td>
+      </tr>`).join('');
+  } else {
+    rt.innerHTML = '<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1.5rem">No active racers</td></tr>';
+  }
+}
+
+async function loadNetwork() {
+  const [peers, mempool] = await Promise.all([api('/api/peers'), api('/api/mempool')]);
+  document.getElementById('net-mempool').textContent = mempool?.pending ?? '—';
+  const pt = document.getElementById('peers-table');
+  if (peers && peers.peers && peers.peers.length) {
+    pt.innerHTML = peers.peers.map((p,i) => `
+      <tr>
+        <td>${i+1}</td>
+        <td class="hash" style="word-break:break-all">${p}</td>
+        <td><span class="badge badge-green">● Connected</span></td>
+      </tr>`).join('');
+  } else {
+    pt.innerHTML = '<tr><td colspan="3" style="color:var(--muted);text-align:center;padding:1.5rem">No peers connected yet</td></tr>';
+  }
+}
+
+async function doSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) return;
+  const result = await api('/api/search?q=' + encodeURIComponent(q));
+  if (!result) return;
+  if (result.type === 'wallet') {
+    const w = await api('/api/wallet?address=' + encodeURIComponent(q));
+    if (w) {
+      document.getElementById('wr-addr').textContent = q;
+      document.getElementById('wr-balance').textContent = (w.balance||0).toFixed(8) + ' SLK';
+      document.getElementById('wr-trophies').textContent = (w.trophy_count||0) + ' trophies mined';
+      document.getElementById('wallet-result').style.display = 'block';
+    }
+  }
+}
+
+async function lookupWallet() {
+  const addr = document.getElementById('wallet-input').value.trim();
+  if (!addr) return;
+  document.getElementById('wallet-card').style.display = 'none';
+  document.getElementById('wallet-error').style.display = 'none';
+  const w = await api('/api/wallet?address=' + encodeURIComponent(addr));
+  if (!w || w.error) {
+    document.getElementById('wallet-error').textContent = '❌ Wallet not found or node offline';
+    document.getElementById('wallet-error').style.display = 'block';
+    return;
+  }
+  document.getElementById('wc-addr').textContent = addr;
+  document.getElementById('wc-balance').textContent = (w.balance||0).toFixed(8) + ' SLK';
+  document.getElementById('wc-trophies').textContent = (w.trophy_count||0);
+  document.getElementById('wallet-card').style.display = 'block';
+}
+
+// Auto-refresh every 10 seconds
+async function refresh() {
+  await loadStats();
+  await loadHomeBlocks();
+}
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

@@ -25,18 +25,34 @@ const (
 	TopicTrophies     = "slk-trophies"
 	TopicRacers       = "slk-racers"
 	TopicTransactions = "slk-transactions"
+	TopicSocial       = "slk-social-feed"
+	TopicBankRecords  = "slk-bank-records"
+	TopicExchange     = "slk-exchange-orders"
 	NetworkRendezvous = "slk-proof-of-race-mainnet-v1"
 	nodeKeyFile       = "node_key"
 )
 
 var BootstrapPeers = []string{
+	// ── libp2p official bootstrap nodes (always online) ──
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
-	// SLK Genesis Node - FANKLIN-MOZACK
-	"/ip4/192.168.100.25/tcp/30303/p2p/12D3KooWGVqFrHPc6hQ3k2xJtwoQCjFxkvZrFWux845UCzErfy4R",
+	// ── IPFS bootstrap nodes (same DHT, massively connected) ──
+	"/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+	"/ip4/104.236.179.241/tcp/4001/p2p/QmSoLPppuBtQSGwKDZT2M73ULpjvfd3aZ6ha4oFGL1KrGM",
+	"/ip4/128.199.219.111/tcp/4001/p2p/QmSoLSafTMBsPKadTEgaXctDQVcqN88CNLHXMkTNwMKPnu",
+	"/ip4/104.236.76.40/tcp/4001/p2p/QmSoLV4Bbm51jM9C4gDYZQ9Cy3U6aXMJDAbzgu2fzaDs64",
+	"/ip4/178.62.158.247/tcp/4001/p2p/QmSoLer265NRgSp2LA3dPaeykiS1J6DifTC88f5uVQKNAd",
+	"/ip6/2604:a880:1:20::203:d001/tcp/4001/p2p/QmSoLPppuBtQSGwKDZT2M73ULpjvfd3aZ6ha4oFGL1KrGM",
+	"/ip6/2400:6180:0:d0::151:6001/tcp/4001/p2p/QmSoLSafTMBsPKadTEgaXctDQVcqN88CNLHXMkTNwMKPnu",
+	"/ip6/2604:a880:800:10::4a:5001/tcp/4001/p2p/QmSoLV4Bbm51jM9C4gDYZQ9Cy3U6aXMJDAbzgu2fzaDs64",
+	"/ip6/2a03:b0c0:0:1010::23:1001/tcp/4001/p2p/QmSoLer265NRgSp2LA3dPaeykiS1J6DifTC88f5uVQKNAd",
+	// ── SLK Genesis Node — FANKLIN-MOZACK ──
+	"/ip4/41.90.70.28/tcp/30303/p2p/12D3KooWKsEnahpKiK4BCM8bfYM3uBvvmayG88c1Nof1vBgmkwPj",
+	"/ip4/41.90.70.28/tcp/30304/p2p/12D3KooWKsEnahpKiK4BCM8bfYM3uBvvmayG88c1Nof1vBgmkwPj",
 }
+
 
 type TrophyMsg struct {
 	Winner   string  `json:"winner"`
@@ -61,6 +77,43 @@ type TxMsg struct {
 	Type      int     `json:"type"`
 }
 
+// SocialMsg — global P2P social post
+type SocialMsg struct {
+	ID        string `json:"id"`
+	From      string `json:"from"`
+	Name      string `json:"name"`
+	Text      string `json:"text"`
+	ImagePath string `json:"image_path"`
+	Likes     int    `json:"likes"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+// BankRecord — broadcast record to all peers
+type BankRecord struct {
+	ID        string  `json:"id"`
+	From      string  `json:"from"`
+	To        string  `json:"to"`
+	Amount    float64 `json:"amount"`
+	Currency  string  `json:"currency"`
+	TxType    string  `json:"tx_type"`
+	Timestamp int64   `json:"timestamp"`
+	Verified  bool    `json:"verified"`
+}
+
+// ExchangeOrder — P2P order book entry broadcast to all peers
+type ExchangeOrder struct {
+	ID        string  `json:"id"`
+	Type      string  `json:"type"`       // "BUY" or "SELL"
+	From      string  `json:"from"`
+	FromName  string  `json:"from_name"`
+	Amount    float64 `json:"amount"`     // SLK amount
+	Price     float64 `json:"price"`      // fiat price per SLK
+	Currency  string  `json:"currency"`   // fiat currency
+	Status    string  `json:"status"`     // "open","filled","cancelled"
+	Timestamp int64   `json:"timestamp"`
+	ExpiresAt int64   `json:"expires_at"`
+}
+
 type RacerMsg struct {
 	Address      string  `json:"address"`
 	DistanceLeft float64 `json:"distance_left"`
@@ -78,14 +131,23 @@ type Node struct {
 	RacerTopic  *pubsub.Topic
 	TrophySub   *pubsub.Subscription
 	RacerSub    *pubsub.Subscription
-	TxTopic     *pubsub.Topic
-	TxSub       *pubsub.Subscription
-	Ctx         context.Context
-	Cancel      context.CancelFunc
-	PeerCount   int
-	OnTrophy    func(TrophyMsg)
-	OnRacer     func(RacerMsg)
-	OnTx        func(TxMsg)
+	TxTopic         *pubsub.Topic
+	TxSub           *pubsub.Subscription
+	SocialTopic     *pubsub.Topic
+	SocialSub       *pubsub.Subscription
+	BankRecordTopic  *pubsub.Topic
+	BankRecordSub    *pubsub.Subscription
+	ExchangeTopic    *pubsub.Topic
+	ExchangeSub      *pubsub.Subscription
+	Ctx             context.Context
+	Cancel          context.CancelFunc
+	PeerCount       int
+	OnTrophy        func(TrophyMsg)
+	OnRacer         func(RacerMsg)
+	OnTx            func(TxMsg)
+	OnSocial        func(SocialMsg)
+	OnBankRecord    func(BankRecord)
+	OnExchange      func(ExchangeOrder)
 }
 
 func loadOrCreateKey(dataDir string) (crypto.PrivKey, error) {
@@ -191,18 +253,39 @@ func NewNode(port int, dataDir string) (*Node, error) {
 		return nil, err
 	}
 
+	socialTopic, err := ps.Join(TopicSocial)
+	if err != nil { cancel(); return nil, err }
+	socialSub, err := socialTopic.Subscribe()
+	if err != nil { cancel(); return nil, err }
+
+	bankRecordTopic, err := ps.Join(TopicBankRecords)
+	if err != nil { cancel(); return nil, err }
+	bankRecordSub, err := bankRecordTopic.Subscribe()
+	if err != nil { cancel(); return nil, err }
+
+	exchangeTopic, err := ps.Join(TopicExchange)
+	if err != nil { cancel(); return nil, err }
+	exchangeSub, err := exchangeTopic.Subscribe()
+	if err != nil { cancel(); return nil, err }
+
 	node := &Node{
-		Host:        h,
-		DHT:         kdht,
-		PubSub:      ps,
-		TrophyTopic: trophyTopic,
-		RacerTopic:  racerTopic,
-		TrophySub:   trophySub,
-		RacerSub:    racerSub,
-		TxTopic:     txTopic,
-		TxSub:       txSub,
-		Ctx:         ctx,
-		Cancel:      cancel,
+		Host:            h,
+		DHT:             kdht,
+		PubSub:          ps,
+		TrophyTopic:     trophyTopic,
+		RacerTopic:      racerTopic,
+		TrophySub:       trophySub,
+		RacerSub:        racerSub,
+		TxTopic:         txTopic,
+		TxSub:           txSub,
+		SocialTopic:     socialTopic,
+		SocialSub:       socialSub,
+		BankRecordTopic:  bankRecordTopic,
+		BankRecordSub:    bankRecordSub,
+		ExchangeTopic:    exchangeTopic,
+		ExchangeSub:      exchangeSub,
+		Ctx:             ctx,
+		Cancel:          cancel,
 	}
 
 	return node, nil
@@ -223,6 +306,9 @@ func (n *Node) Start() {
 	go n.listenTrophies()
 	go n.listenRacers()
 	go n.listenTxs()
+	go n.listenSocial()
+	go n.listenBankRecords()
+	go n.listenExchange()
 	go n.trackPeers()
 }
 
@@ -293,6 +379,8 @@ func (n *Node) trackPeers() {
 	}
 }
 
+const maxMsgSize = 1024 * 64 // 64KB max per P2P message — prevents spam/DDoS
+
 func (n *Node) listenTrophies() {
 	for {
 		msg, err := n.TrophySub.Next(n.Ctx)
@@ -301,6 +389,9 @@ func (n *Node) listenTrophies() {
 		}
 		if msg.ReceivedFrom == n.Host.ID() {
 			continue
+		}
+		if len(msg.Data) > maxMsgSize {
+			continue // drop oversized messages silently
 		}
 		var t TrophyMsg
 		if err := json.Unmarshal(msg.Data, &t); err != nil {
@@ -372,6 +463,87 @@ func (n *Node) BroadcastTx(tx TxMsg) error {
 		return err
 	}
 	return n.TxTopic.Publish(n.Ctx, data)
+}
+
+func (n *Node) listenSocial() {
+	for {
+		msg, err := n.SocialSub.Next(n.Ctx)
+		if err != nil { return }
+		if msg.ReceivedFrom == n.Host.ID() { continue }
+		var s SocialMsg
+		if err := json.Unmarshal(msg.Data, &s); err != nil { continue }
+		if n.OnSocial != nil { n.OnSocial(s) }
+	}
+}
+
+func (n *Node) BroadcastSocial(s SocialMsg) error {
+	data, err := json.Marshal(s)
+	if err != nil { return err }
+	return n.SocialTopic.Publish(n.Ctx, data)
+}
+
+func (n *Node) listenBankRecords() {
+	for {
+		msg, err := n.BankRecordSub.Next(n.Ctx)
+		if err != nil { return }
+		if msg.ReceivedFrom == n.Host.ID() { continue }
+		var r BankRecord
+		if err := json.Unmarshal(msg.Data, &r); err != nil { continue }
+		if n.OnBankRecord != nil { n.OnBankRecord(r) }
+	}
+}
+
+func (n *Node) BroadcastBankRecord(r BankRecord) error {
+	data, err := json.Marshal(r)
+	if err != nil { return err }
+	return n.BankRecordTopic.Publish(n.Ctx, data)
+}
+
+func (n *Node) listenExchange() {
+	for {
+		msg, err := n.ExchangeSub.Next(n.Ctx)
+		if err != nil { return }
+		if msg.ReceivedFrom == n.Host.ID() { continue }
+		if len(msg.Data) > maxMsgSize { continue }
+		var o ExchangeOrder
+		if err := json.Unmarshal(msg.Data, &o); err != nil { continue }
+		if n.OnExchange != nil { n.OnExchange(o) }
+	}
+}
+
+func (n *Node) BroadcastExchangeOrder(o ExchangeOrder) error {
+	data, err := json.Marshal(o)
+	if err != nil { return err }
+	return n.ExchangeTopic.Publish(n.Ctx, data)
+}
+
+// GetPeers returns list of connected peer ID strings
+func (n *Node) GetPeers() []string {
+	peers := n.Host.Network().Peers()
+	result := make([]string, 0, len(peers))
+	for _, p := range peers {
+		result = append(result, p.String())
+	}
+	return result
+}
+
+// GetPeerAddrs returns peer ID + multiaddrs
+func (n *Node) GetPeerAddrs() map[string][]string {
+	out := make(map[string][]string)
+	for _, p := range n.Host.Network().Peers() {
+		conns := n.Host.Network().ConnsToPeer(p)
+		addrs := []string{}
+		for _, c := range conns {
+			addrs = append(addrs, c.RemoteMultiaddr().String())
+		}
+		out[p.String()] = addrs
+	}
+	return out
+}
+
+// MyPeerID returns this node's peer ID
+func (n *Node) MyPeerID() string {
+	return n.Host.ID().String()
 }
 
 func (n *Node) Stop() {

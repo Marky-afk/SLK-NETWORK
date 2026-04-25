@@ -38,26 +38,41 @@ func NewMempool() *Mempool {
 	return m
 }
 
-// Add adds a transaction to the mempool
+// Add adds a transaction to the mempool with full validation
 func (m *Mempool) Add(tx *MempoolTx) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.Txs[tx.ID]; exists {
-		return fmt.Errorf("tx %s already in mempool", tx.ID)
-	}
 	if tx.Amount <= 0 {
-		return fmt.Errorf("invalid amount")
+		return fmt.Errorf("invalid amount: %.8f", tx.Amount)
 	}
-
-	// Double spend check — reject if duplicate TX ID
-	if _, exists := m.Txs[tx.ID]; exists {
-		return fmt.Errorf("tx %s already in mempool", tx.ID)
+	if tx.From == "" || tx.To == "" {
+		return fmt.Errorf("missing from/to address")
 	}
 	if tx.From == tx.To {
 		return fmt.Errorf("cannot send to yourself")
 	}
-
+	if len(tx.ID) < 8 {
+		return fmt.Errorf("invalid tx ID")
+	}
+	if _, exists := m.Txs[tx.ID]; exists {
+		return fmt.Errorf("tx %s already in mempool", tx.ID)
+	}
+	if tx.Timestamp > 0 && time.Now().Unix()-tx.Timestamp > 600 {
+		return fmt.Errorf("tx too old - possible replay attack")
+	}
+	senderCount := 0
+	for _, t := range m.Txs {
+		if t.From == tx.From {
+			senderCount++
+		}
+	}
+	if senderCount >= 100 {
+		return fmt.Errorf("too many pending txs from sender - rate limited")
+	}
+	if len(m.Txs) >= 10000 {
+		return fmt.Errorf("mempool full - try again later")
+	}
 	tx.Timestamp = time.Now().Unix()
 	m.Txs[tx.ID] = tx
 	fmt.Printf("📥 Mempool: tx %s added (%.8f SLK from %s)\n",
@@ -65,7 +80,6 @@ func (m *Mempool) Add(tx *MempoolTx) error {
 	m.save()
 	return nil
 }
-
 // Remove confirms a tx — called when trophy is mined
 func (m *Mempool) Remove(txID string) {
 	m.mu.Lock()

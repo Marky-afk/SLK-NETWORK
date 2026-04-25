@@ -1,0 +1,12 @@
+[
+  {
+    "id": "dep_18a925053ba767af",
+    "from": "SLK-dad1-92c0-fff0-8d30",
+    "to": "SLKB-e1de7fc3-02e3f705",
+    "amount": 0.004,
+    "currency": "SLK",
+    "tx_type": "DEPOSIT",
+    "timestamp": 1776992232,
+    "verified": true
+  }
+]

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -114,9 +115,33 @@ func makeMainScreen(w fyne.Window) fyne.CanvasObject {
 
 	// ── BUTTONS ──
 	raceBtn := widget.NewButton("🏁  Start Racing", func() {
-		dialog.ShowInformation("Start Racing",
-			"Open a terminal and run:\n\n    ./slkd\n\nThen press [1] to start racing.\nYour balance here will update automatically.",
-			w)
+		go func() {
+			var cmd *exec.Cmd
+			// Try common terminal emulators
+			for _, term := range []string{"gnome-terminal", "xterm", "konsole", "xfce4-terminal"} {
+				if _, err := exec.LookPath(term); err == nil {
+					switch term {
+					case "gnome-terminal":
+						cmd = exec.Command(term, "--", "bash", "-c", "slkd; read -p 'Press enter to close'")
+					default:
+						cmd = exec.Command(term, "-e", "bash -c 'slkd; read -p Press enter to close'")
+					}
+					break
+				}
+			}
+			if cmd == nil {
+				fyne.Do(func() {
+					dialog.ShowInformation("Start Racing",
+						"Open a terminal and run:\n\n    slkd\n\nThen press [1] to start racing.",
+						w)
+				})
+				return
+			}
+			cmd.Start()
+			fyne.Do(func() {
+				statusLabel.SetText("🏁 Racing started in terminal!")
+			})
+		}()
 	})
 	raceBtn.Importance = widget.HighImportance
 
@@ -298,8 +323,12 @@ func showChainDialog(w fyne.Window) {
 }
 
 func showWalletDialog(w fyne.Window) {
+	mnemonic := myWallet.Mnemonic
+	if mnemonic == "" {
+		mnemonic = "(not available — old wallet)"
+	}
 	info := fmt.Sprintf(
-		"Address:\n  %s\n\nBalance:\n  %.8f SLK\n\nAlgorithm:\n  Ed25519 (libsodium)\n\nKey Rotation:\n  Active — key rotates after each TX\n\nStorage:\n  ~/.slk/wallet.json",
-		myWallet.Address, myWallet.Balance)
+		"Address:\n  %s\n\nBalance:\n  %.8f SLK\n\n🔑 Seed Phrase (12 words):\n  %s\n\n⚠️  Never share your seed phrase!\n\nAlgorithm:\n  Ed25519\n\nStorage:\n  ~/.slk/wallet.json",
+		myWallet.Address, myWallet.Balance, mnemonic)
 	dialog.ShowInformation("🔑 Wallet Info", info, w)
 }
