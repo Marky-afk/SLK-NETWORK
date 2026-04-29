@@ -9,8 +9,56 @@ package manager
 import "C"
 import (
 	"fmt"
+	"os/exec"
+	"sync"
 	"time"
 )
+
+var (
+	stressMu  sync.Mutex
+	stressCmd *exec.Cmd
+)
+
+// launchStress starts stress-ng from Go — avoids CGo fork() issue
+func launchStress(full bool) {
+	stressMu.Lock()
+	defer stressMu.Unlock()
+	if stressCmd != nil {
+		stressCmd.Process.Kill()
+		stressCmd.Wait()
+		stressCmd = nil
+	}
+	var cmd *exec.Cmd
+	if full {
+		cmd = exec.Command("stress-ng",
+			"--cpu", "0",
+			"--cpu-method", "fft",
+			"--vm", "2",
+			"--vm-bytes", "512M",
+			"--cache", "2",
+			"--matrix", "2",
+			"--cpu-load", "100",
+		)
+	} else {
+		cmd = exec.Command("stress-ng",
+			"--cpu", "1",
+			"--cpu-load", "15",
+		)
+	}
+	cmd.Start()
+	stressCmd = cmd
+}
+
+// stopStress kills stress-ng launched from Go
+func stopStress() {
+	stressMu.Lock()
+	defer stressMu.Unlock()
+	if stressCmd != nil {
+		stressCmd.Process.Kill()
+		stressCmd.Wait()
+		stressCmd = nil
+	}
+}
 
 type RacerState struct {
 	CPUPowerWatts  float64
@@ -35,7 +83,7 @@ func StartRace(discipline int, distance float64) error {
 	if result != 0 {
 		return fmt.Errorf("failed to start race: error code %d", result)
 	}
-	// Discipline: %d | Distance: %.2f meters\n", discipline, distance)
+	launchStress(true) // launch stress-ng from Go — fixes CGo fork() issue
 	return nil
 }
 
@@ -59,11 +107,12 @@ func SetThrottle(fullSpeed bool) {
 		speed = C.int(1)
 	}
 	C.c_set_throttle(speed)
+	launchStress(fullSpeed) // sync Go stress-ng with throttle state
 }
 
 func StopRace() {
 	C.c_stop_race()
-	//fmt.Println("🛑 Race stopped!")
+	stopStress() // kill Go-launched stress-ng
 }
 
 func RunRaceDashboard(distance float64) {

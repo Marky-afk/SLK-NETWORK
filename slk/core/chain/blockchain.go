@@ -30,6 +30,8 @@ func NewBlockchain() *Blockchain {
 			bc.UTXOSet = state.NewUTXOSet()
 		}
 		fmt.Printf("📦 Loaded existing chain — %d trophies\n", len(bc.Trophies))
+		bc.RehashChain()
+		bc.SaveChain()
 		return bc
 	}
 
@@ -90,6 +92,28 @@ func (bc *Blockchain) AddTrophy(winner string, distance, finishTime float64, tie
 	return newTrophy
 }
 
+// GetAverageBlockTime returns avg seconds per block over last N trophies
+func (bc *Blockchain) GetAverageBlockTime(last int) float64 {
+	if len(bc.Trophies) < 2 { return TargetBlockTime }
+	n := last
+	if n > len(bc.Trophies)-1 { n = len(bc.Trophies)-1 }
+	newest := bc.Trophies[len(bc.Trophies)-1]
+	oldest := bc.Trophies[len(bc.Trophies)-1-n]
+	elapsed := float64(newest.Timestamp - oldest.Timestamp)
+	if elapsed <= 0 { return TargetBlockTime }
+	return elapsed / float64(n)
+}
+
+// AdjustedDistance returns the difficulty-adjusted race distance
+// Retargets every 100 blocks based on actual block times
+func (bc *Blockchain) AdjustedDistance(peerCount int) float64 {
+	base := CalculateDistance(peerCount, bc.Height)
+	if peerCount <= 1 { return base } // solo mining — skip adjustment, use base directly
+	if bc.Height < 10 { return base } // not enough data yet
+	avgTime := bc.GetAverageBlockTime(100)
+	return AdjustDistance(base, avgTime)
+}
+
 func (bc *Blockchain) IsValid() bool {
 	for i := 1; i < len(bc.Trophies); i++ {
 		current  := bc.Trophies[i]
@@ -135,4 +159,15 @@ func loadChain() (*Blockchain, error) {
 		return nil, err
 	}
 	return &bc, nil
+}
+
+// RehashChain recomputes all trophy hashes after JSON load.
+// This fixes float64 precision loss from JSON round-trip.
+func (bc *Blockchain) RehashChain() {
+	for i := 1; i < len(bc.Trophies); i++ {
+		prev := bc.Trophies[i-1]
+		curr := bc.Trophies[i]
+		curr.PrevHash = prev.Hash
+		curr.Hash = curr.ComputeHash()
+	}
 }

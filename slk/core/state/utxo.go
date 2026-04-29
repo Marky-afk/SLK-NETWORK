@@ -179,6 +179,17 @@ func (u *UTXOSet) GetTotalBalance(address string) float64 {
 }
 
 // HasSufficientFunds checks if address can afford amount — double spend protection
+// TotalCirculating returns sum of ALL unspent UTXOs across every address
+func (u *UTXOSet) TotalCirculating() float64 {
+	total := 0.0
+	for _, utxo := range u.UTXOs {
+		if !utxo.Spent {
+			total += utxo.Amount
+		}
+	}
+	return total
+}
+
 func (u *UTXOSet) HasSufficientFunds(address string, amount float64) bool {
 	return u.GetTotalBalance(address) >= amount
 }

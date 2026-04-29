@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"strconv"
@@ -81,6 +82,21 @@ type BankTX struct {
 	Verified  bool    `json:"verified"`
 }
 
+// VaultDeposit — immutable record of every SLK deposited into bank vault
+type VaultDeposit struct {
+	TxID          string  `json:"tx_id"`
+	DepositorAddr string  `json:"depositor_addr"`
+	Amount        float64 `json:"amount"`
+	Fee           float64 `json:"fee"`
+	NetAmount     float64 `json:"net_amount"`
+	Timestamp     int64   `json:"timestamp"`
+	PrevHash      string  `json:"prev_hash"`
+	Hash          string  `json:"hash"`
+	Withdrawn     bool    `json:"withdrawn"`
+	WithdrawnAt   int64   `json:"withdrawn_at"`
+	WithdrawTxID  string  `json:"withdraw_tx_id"`
+}
+
 type MarketListing struct {
 	ID          string  `json:"id"`
 	Seller      string  `json:"seller"`
@@ -102,13 +118,14 @@ type MarketListing struct {
 }
 
 type SocialPost struct {
-	ID        string   `json:"id"`
-	From      string   `json:"from"`
-	Name      string   `json:"name"`
-	Text      string   `json:"text"`
-	ImagePath string   `json:"image_path"`
-	Timestamp int64    `json:"timestamp"`
-	Likes     []string `json:"likes"`
+	ID        string    `json:"id"`
+	From      string    `json:"from"`
+	Name      string    `json:"name"`
+	Text      string    `json:"text"`
+	ImagePath string    `json:"image_path"`
+	ImageData string    `json:"image_data"` // base64 encoded — works across network
+	Timestamp int64     `json:"timestamp"`
+	Likes     []string  `json:"likes"`
 	Comments  []Comment `json:"comments"`
 }
 
@@ -157,11 +174,23 @@ type Notification struct {
 }
 
 type KnownBank struct {
-	AccountID string `json:"account_id"`
-	Name      string `json:"name"`
-	OwnerAddr string `json:"owner_addr"`
-	PeerID    string `json:"peer_id"`
-	SeenAt    int64  `json:"seen_at"`
+	AccountID    string `json:"account_id"`
+	Name         string `json:"name"`
+	OwnerAddr    string `json:"owner_addr"`
+	PeerID       string `json:"peer_id"`
+	SeenAt       int64  `json:"seen_at"`
+	Currency     string `json:"currency"`
+	SLKRate      float64 `json:"slk_rate"`
+	BankType     string `json:"bank_type"` // "commercial" or "reserve"
+}
+
+// CurrencyPermission — tracks who is allowed to use a currency
+type CurrencyPermission struct {
+	Currency    string `json:"currency"`
+	OwnerBankID string `json:"owner_bank_id"`
+	GrantedTo   string `json:"granted_to"`   // bank ID granted permission
+	GrantedAt   int64  `json:"granted_at"`
+	Approved    bool   `json:"approved"`
 }
 
 // Commercial Bank — earns fees from transactions
@@ -224,6 +253,7 @@ type BankClient struct {
 	AccountID    string         `json:"account_id"`
 	Name         string         `json:"name"`
 	SLKAddress   string         `json:"slk_address"`
+	BalanceHash  string         `json:"balance_hash"`  // SHA256(accountID+balance+timestamp) — tamper detection
 	ExternalID   string         `json:"external_id"`
 	Email        string         `json:"email"`
 	IsCustodial  bool           `json:"is_custodial"`
@@ -373,8 +403,10 @@ type VerifiedIdentity struct {
 
 // ── GLOBALS ──
 var (
-	bankAccount *BankAccount
-	mainWallet  *wallet.Wallet
+	bankAccount      *BankAccount
+	mainWallet       *wallet.Wallet
+	bankVaultWallet  *wallet.Wallet
+	vaultLedger      []VaultDeposit
 	utxoSet     *state.UTXOSet
 	p2pNode     *p2p.Node
 
@@ -393,7 +425,9 @@ var (
 	netRecords  []NetworkRecord
 	friendReqs  []FriendRequest
 	chatMsgs    []ChatMessage
-	knownBanks     []KnownBank
+	knownBanks          []KnownBank
+	currencyPerms       []CurrencyPermission
+	currencyPermsPath   = os.Getenv("HOME") + "/.slkbank/currency_perms.json"
 	myCommercialBanks []CommercialBank
 	myReserveBanks    []ReserveBank
 	notifications  []Notification
@@ -401,7 +435,9 @@ var (
 	notifLabel     *widget.Label
 
 	dataDir    = os.Getenv("HOME") + "/.slkbank"
-	walletPath = os.Getenv("HOME") + "/.slk/wallet.json"
+	walletPath       = os.Getenv("HOME") + "/.slk/wallet.json"
+	vaultPath        = os.Getenv("HOME") + "/.slk/bank_vault.json"
+	vaultLedgerPath  = os.Getenv("HOME") + "/.slkbank/vault_ledger.json"
 
 	slkLabel    *widget.Label
 	slktLabel   *widget.Label
@@ -441,6 +477,7 @@ func main() {
 	friendReqs = loadFriends()
 	chatMsgs   = loadChat()
 	knownBanks         = loadBanks()
+	currencyPerms      = loadCurrencyPerms()
 	myCommercialBanks  = loadCommercialBanks()
 	myReserveBanks     = loadReserveBanks()
 	bankPayments       = loadBankPayments()
@@ -454,6 +491,8 @@ func main() {
 	myRecurring        = loadRecurring()
 	myProposals        = loadProposals()
 	myIdentity         = loadIdentity()
+	vaultLedger        = loadVaultLedger()
+	bankVaultWallet    = loadOrCreateVaultWallet()
 	// Check recurring payments due
 	go checkRecurringPayments()
 	// Check timelocks due
@@ -629,8 +668,7 @@ func startAPIServer() {
 			Timestamp: time.Now().Unix(), Note: req.Note, Verified: true}
 		txHistory = append(txHistory, tx)
 		saveTxHistory()
-		bankAccount.SLK -= req.Amount + fee
-		saveBankAccount(bankAccount)
+		// Real UTXO movement handled by send function above — balance syncs via refreshLabels
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true, "tx_id": txID,
 			"amount": req.Amount, "fee": fee, "to": req.To,
@@ -950,8 +988,22 @@ func startAPIServer() {
 						Timestamp: time.Now().Unix(),
 					})
 				}
-				bankAccount.SLK -= slkAmount
-				saveCommercialBanks(); saveBankAccount(bankAccount)
+				// Real UTXO: wallet → recipient for API send
+				apiSendUs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+				spAPI := 0.0
+				for _, u := range apiSendUs {
+					if spAPI >= slkAmount { break }
+					utxoSet.SpendUTXO(u.TxID, u.OutputIndex, txID)
+					spAPI += u.Amount
+				}
+				if spAPI > 0 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: txID, OutputIndex: 0, Amount: slkAmount, Address: req.SLKAddress, Spent: false})
+					if spAPI-slkAmount > 0.000000001 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: txID, OutputIndex: 1, Amount: spAPI-slkAmount, Address: mainWallet.Address, Spent: false})
+					}
+					utxoSet.Save()
+				}
+				saveCommercialBanks()
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"success": true, "tx_id": txID,
 					"slk_sent": slkAmount, "currency_deducted": req.Amount,
@@ -964,6 +1016,27 @@ func startAPIServer() {
 		w.WriteHeader(404); json.NewEncoder(w).Encode(map[string]string{"error":"user not found"})
 	})
 
+	// POST /slkapi/bank/approve_currency — owner approves currency sharing request
+	mux.HandleFunc("/slkapi/bank/approve_currency", func(w http.ResponseWriter, r *http.Request) {
+		cors(w)
+		if r.Method == "OPTIONS" { return }
+		ok, _ := bankAuth(r)
+		if !ok { w.WriteHeader(401); json.NewEncoder(w).Encode(map[string]string{"error":"unauthorized"}); return }
+		var req struct {
+			Currency  string `json:"currency"`
+			GrantedTo string `json:"granted_to"`
+			Approve   bool   `json:"approve"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(400); json.NewEncoder(w).Encode(map[string]string{"error":"bad request"}); return
+		}
+		if req.Approve {
+			approveCurrencyPermission(req.Currency, req.GrantedTo)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "Currency sharing approved"})
+		} else {
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Rejected"})
+		}
+	})
 	// GET /slkapi/bank/stats — bank stats (tx count, total clients, fees)
 	mux.HandleFunc("/slkapi/bank/stats", func(w http.ResponseWriter, r *http.Request) {
 		cors(w)
@@ -992,6 +1065,210 @@ func startAPIServer() {
 
 	go func() {
 		fmt.Println("🌐 SLK API Server running on port 8081")
+		// ══ PUBLIC BLOCKCHAIN ENDPOINTS ══
+		// No auth needed — exchanges, explorers, MetaMask use these
+
+		// GET /slkapi/verify/chain — full cryptographic chain verification (public)
+		mux.HandleFunc("/slkapi/verify/chain", func(w http.ResponseWriter, r *http.Request) {
+			cors(w)
+			if !rateLimit(r) { w.WriteHeader(429); return }
+			if bc == nil { w.WriteHeader(503); return }
+			results := []map[string]interface{}{}
+			allValid := true
+			for i := 1; i < len(bc.Trophies); i++ {
+				t := bc.Trophies[i]
+				p := bc.Trophies[i-1]
+				computed := t.ComputeHash()
+				hashOK := fmt.Sprintf("%x", computed) == fmt.Sprintf("%x", t.Hash)
+				linkOK := fmt.Sprintf("%x", t.PrevHash) == fmt.Sprintf("%x", p.Hash)
+				vdfOK  := t.VDFProof != ""
+				blockValid := hashOK && linkOK
+				if !blockValid { allValid = false }
+				results = append(results, map[string]interface{}{
+					"height":     t.Header.Height,
+					"winner":     t.Winner,
+					"hash":       fmt.Sprintf("%x", t.Hash),
+					"hash_valid": hashOK,
+					"link_valid": linkOK,
+					"vdf_proof":  vdfOK,
+					"valid":      blockValid,
+				})
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"chain_valid":  allValid,
+				"total_blocks": len(bc.Trophies),
+				"checked":      len(results),
+				"blocks":       results,
+				"consensus":    "Proof-of-Race",
+				"symbol":       "SLK",
+			})
+		})
+
+		// GET /slkapi/verify/block?height=N — verify single block (public)
+		mux.HandleFunc("/slkapi/verify/block", func(w http.ResponseWriter, r *http.Request) {
+			cors(w)
+			if !rateLimit(r) { w.WriteHeader(429); return }
+			if bc == nil { w.WriteHeader(503); return }
+			var height uint64
+			fmt.Sscanf(r.URL.Query().Get("height"), "%d", &height)
+			for i, t := range bc.Trophies {
+				if t.Header.Height == height && i > 0 {
+					p := bc.Trophies[i-1]
+					computed := t.ComputeHash()
+					hashOK := fmt.Sprintf("%x", computed) == fmt.Sprintf("%x", t.Hash)
+					linkOK := fmt.Sprintf("%x", t.PrevHash) == fmt.Sprintf("%x", p.Hash)
+					vdfOK  := t.VDFProof != ""
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"height":      t.Header.Height,
+						"winner":      t.Winner,
+						"hash":        fmt.Sprintf("%x", t.Hash),
+						"prev_hash":   fmt.Sprintf("%x", t.PrevHash),
+						"hash_valid":  hashOK,
+						"link_valid":  linkOK,
+						"vdf_proof":   t.VDFProof,
+						"vdf_verified": vdfOK,
+						"timestamp":   t.Timestamp,
+						"valid":       hashOK && linkOK,
+					})
+					return
+				}
+			}
+			w.WriteHeader(404)
+			json.NewEncoder(w).Encode(map[string]string{"error":"block not found"})
+		})
+
+		// GET /slkapi/chain
+		mux.HandleFunc("/slkapi/chain", func(w http.ResponseWriter, r *http.Request) {
+			cors(w)
+			if !rateLimit(r) { w.WriteHeader(429); return }
+			if bc == nil { w.WriteHeader(503); return }
+			peers := 0; if p2pNode != nil { peers = p2pNode.PeerCount }
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"name":         "SLK",
+				"symbol":       "SLK",
+				"height":       bc.Height,
+				"total_supply": 2_000_000_000.0,
+				"circulating":  utxoSet.TotalCirculating(),
+				"block_reward": 0.00800000,
+				"consensus":    "Proof-of-Race",
+				"peers":        peers,
+				"trophies":     len(bc.Trophies),
+				"version":      "1.0",
+			})
+		})
+
+		// GET /slkapi/block?height=N
+		mux.HandleFunc("/slkapi/block", func(w http.ResponseWriter, r *http.Request) {
+			cors(w)
+			if !rateLimit(r) { w.WriteHeader(429); return }
+			if bc == nil { w.WriteHeader(503); return }
+			var height uint64
+			fmt.Sscanf(r.URL.Query().Get("height"), "%d", &height)
+			for _, t := range bc.Trophies {
+				if t.Header.Height == height {
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"height":      t.Header.Height,
+						"winner":      t.Winner,
+						"reward":      t.Reward,
+						"tier":        t.TierName(),
+						"distance":    t.Distance,
+						"finish_time": t.FinishTime,
+						"hash":        fmt.Sprintf("%x", t.Hash),
+						"prev_hash":   fmt.Sprintf("%x", t.PrevHash),
+						"timestamp":   t.Timestamp,
+						"vdf_verified": t.VDFProof != "",
+					})
+					return
+				}
+			}
+			w.WriteHeader(404)
+			json.NewEncoder(w).Encode(map[string]string{"error":"block not found"})
+		})
+
+		// GET /slkapi/address/{addr} — public balance lookup, no auth
+		mux.HandleFunc("/slkapi/address/", func(w http.ResponseWriter, r *http.Request) {
+			cors(w)
+			if !rateLimit(r) { w.WriteHeader(429); return }
+			addr := strings.TrimPrefix(r.URL.Path, "/slkapi/address/")
+			addr = strings.TrimSpace(addr)
+			if addr == "" || !strings.HasPrefix(addr, "SLK-") {
+				w.WriteHeader(400)
+				json.NewEncoder(w).Encode(map[string]string{"error":"invalid address"})
+				return
+			}
+			bal := 0.0
+			if utxoSet != nil { bal = utxoSet.GetTotalBalance(addr) }
+			utxos := []map[string]interface{}{}
+			if utxoSet != nil {
+				for _, u := range utxoSet.GetUnspentForAddress(addr) {
+					utxos = append(utxos, map[string]interface{}{
+						"txid":        u.TxID,
+						"amount":      u.Amount,
+						"from_trophy": u.FromTrophy,
+					})
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"address":    addr,
+				"balance":    bal,
+				"symbol":     "SLK",
+				"utxos":      utxos,
+				"utxo_count": len(utxos),
+			})
+		})
+
+		// GET /slkapi/tx/{txid} — public tx lookup, no auth
+		mux.HandleFunc("/slkapi/tx/", func(w http.ResponseWriter, r *http.Request) {
+			cors(w)
+			if !rateLimit(r) { w.WriteHeader(429); return }
+			txid := strings.TrimPrefix(r.URL.Path, "/slkapi/tx/")
+			for _, tx := range txHistory {
+				if tx.ID == txid {
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"tx_id":     tx.ID,
+						"from":      tx.From,
+						"to":        tx.To,
+						"amount":    tx.Amount,
+						"currency":  tx.Currency,
+						"type":      tx.Type,
+						"timestamp": tx.Timestamp,
+						"verified":  tx.Verified,
+					})
+					return
+				}
+			}
+			w.WriteHeader(404)
+			json.NewEncoder(w).Encode(map[string]string{"error":"tx not found"})
+		})
+
+		// GET /slkapi/trophies — latest 50 blocks (public)
+		mux.HandleFunc("/slkapi/trophies", func(w http.ResponseWriter, r *http.Request) {
+			cors(w)
+			if !rateLimit(r) { w.WriteHeader(429); return }
+			if bc == nil { w.WriteHeader(503); return }
+			list := []map[string]interface{}{}
+			start := 0
+			if len(bc.Trophies) > 50 { start = len(bc.Trophies)-50 }
+			for i := len(bc.Trophies)-1; i >= start; i-- {
+				t := bc.Trophies[i]
+				if t.Header.Height == 0 { continue }
+				list = append(list, map[string]interface{}{
+					"height":       t.Header.Height,
+					"winner":       t.Winner,
+					"reward":       t.Reward,
+					"tier":         t.TierName(),
+					"hash":         fmt.Sprintf("%x", t.Hash),
+					"timestamp":    t.Timestamp,
+					"vdf_verified": t.VDFProof != "",
+				})
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"trophies": list,
+				"count":    len(list),
+				"height":   bc.Height,
+			})
+		})
+
 		http.ListenAndServe(":8081", mux)
 	}()
 }
@@ -1126,6 +1403,50 @@ func startP2P() {
 		}
 		p2pNode = node
 
+		// ── Auto chain sync on connect ──
+		// When we join the network, ask peers for any trophies we are missing.
+		// This is how a new node catches up to the real chain height.
+		go func() {
+			time.Sleep(5 * time.Second) // give peers time to connect first
+			if p2pNode != nil && bc != nil {
+				resp, err := p2pNode.SyncWithBestPeer(bc.Height)
+				if err == nil && resp != nil && len(resp.Trophies) > 0 {
+					added := 0
+					for _, t := range resp.Trophies {
+						// Only add trophies above our current height
+						if t.Height <= bc.Height { continue }
+						// Validate height is sequential
+						if t.Height != bc.Height+1 { break }
+						// Validate prevHash links correctly
+						if len(bc.Trophies) > 0 {
+							tip := bc.Trophies[len(bc.Trophies)-1]
+							if fmt.Sprintf("%x", tip.Hash) != t.PrevHash { break }
+						}
+						newT := trophy.NewTrophy(
+							hexToBytes(t.PrevHash),
+							t.Winner, t.Distance, t.Time,
+							trophy.Tier(t.Tier), t.Height,
+						)
+						newT.VDFProof = t.VDFProof
+						newT.VDFInput = t.VDFInput
+						bc.Trophies = append(bc.Trophies, newT)
+						bc.Height = t.Height
+						bc.TotalSupply -= newT.Reward
+						added++
+					}
+					if added > 0 {
+						bc.SaveChain()
+						fmt.Printf("⛓ Chain synced: +%d trophies, now at height %d\n", added, bc.Height)
+						fyne.Do(func() {
+							if statusBar != nil {
+								statusBar.SetText(fmt.Sprintf("⛓ Synced +%d blocks, height %d", added, bc.Height))
+							}
+						})
+					}
+				}
+			}
+		}()
+
 		// Announce our bank to the network
 		go func() {
 			time.Sleep(3 * time.Second)
@@ -1149,8 +1470,9 @@ func startP2P() {
 				Timestamp: msg.Timestamp, Verified: true}
 			txHistory = append(txHistory, tx)
 			saveTxHistory()
-			bankAccount.SLK += msg.Amount
-			saveBankAccount(bankAccount)
+			// Real UTXO: incoming payment credited to wallet
+			utxoSet.AddUTXO(&state.UTXO{TxID: msg.ID, OutputIndex: 0, Amount: msg.Amount, Address: mainWallet.Address, Spent: false})
+			utxoSet.Save()
 			if p2pNode != nil {
 				p2pNode.BroadcastBankRecord(p2p.BankRecord{
 					ID: msg.ID, From: msg.From, To: msg.To,
@@ -1267,9 +1589,22 @@ func startP2P() {
 				}
 				return
 			}
-			// Normal social post
+			// Normal social post — decode image data so peers can see images
+			savedImgPath := msg.ImagePath
+			if msg.ImageData != "" {
+				raw, err := base64.StdEncoding.DecodeString(msg.ImageData)
+				if err == nil {
+					tmpDir := filepath.Join(os.Getenv("HOME"), ".slkbank", "img_cache")
+					os.MkdirAll(tmpDir, 0755)
+					ext := ".jpg"
+					if strings.HasSuffix(msg.ImagePath, ".png") { ext = ".png" }
+					if strings.HasSuffix(msg.ImagePath, ".gif") { ext = ".gif" }
+					tmpPath := filepath.Join(tmpDir, msg.ID+ext)
+					if os.WriteFile(tmpPath, raw, 0644) == nil { savedImgPath = tmpPath }
+				}
+			}
 			post := SocialPost{ID: msg.ID, From: msg.From, Name: msg.Name,
-				Text: msg.Text, ImagePath: msg.ImagePath, Timestamp: msg.Timestamp}
+				Text: msg.Text, ImagePath: savedImgPath, ImageData: msg.ImageData, Timestamp: msg.Timestamp}
 			socialFeed = append(socialFeed, post)
 			saveSocial()
 			fyne.Do(func() {
@@ -1290,11 +1625,107 @@ func startP2P() {
 			saveExchangeOrders()
 		}
 		p2pNode.OnBankRecord = func(rec p2p.BankRecord) {
+			// Save to network records
 			nr := NetworkRecord{ID: rec.ID, From: rec.From, To: rec.To,
 				Amount: rec.Amount, Currency: rec.Currency,
 				TxType: rec.TxType, Timestamp: rec.Timestamp, Verified: rec.Verified}
 			netRecords = append(netRecords, nr)
 			saveRecords()
+
+			// ── PROCESS INCOMING TRANSACTIONS ──
+			switch rec.TxType {
+
+			case "DEPOSIT":
+				// Someone deposited to our bank — credit their SLKA
+				for i := range myCommercialBanks {
+					cb := &myCommercialBanks[i]
+					if cb.ID != rec.To && cb.OwnerID != bankAccount.AccountID { continue }
+					slkaAmt := rec.Amount * cb.SLKRate
+					fee := rec.Amount * float64(cb.FeeBasisPoints) / 10000.0
+					netSlka := (rec.Amount - fee) * cb.SLKRate
+					found := false
+					for j := range cb.Clients {
+						if cb.Clients[j].AccountID == rec.From || cb.Clients[j].SLKAddress == rec.From {
+							cb.Clients[j].Balance += netSlka
+							cb.Clients[j].TotalDeposited += rec.Amount
+							found = true; break
+						}
+					}
+					if !found {
+						cb.Clients = append(cb.Clients, BankClient{
+							AccountID: rec.From, SLKAddress: rec.From,
+							Name: rec.From[:min(12,len(rec.From))],
+							Balance: netSlka, TotalDeposited: rec.Amount,
+							Verified: true, Active: true, JoinedAt: rec.Timestamp,
+						})
+					}
+					cb.TotalDeposited += rec.Amount
+					cb.TotalFees += fee
+					_ = slkaAmt
+					saveCommercialBanks()
+					break
+				}
+
+			case "PAYMENT":
+				// Incoming payment to one of our clients
+				for i := range myCommercialBanks {
+					cb := &myCommercialBanks[i]
+					for j := range cb.Clients {
+						if cb.Clients[j].AccountID == rec.To || cb.Clients[j].SLKAddress == rec.To {
+							cb.Clients[j].Balance += rec.Amount
+							saveCommercialBanks()
+							break
+						}
+					}
+				}
+
+			case "WITHDRAW":
+				// Client withdrew — deduct their SLKA balance
+				for i := range myCommercialBanks {
+					cb := &myCommercialBanks[i]
+					for j := range cb.Clients {
+						if cb.Clients[j].AccountID == rec.From || cb.Clients[j].SLKAddress == rec.From {
+							slkaDed := rec.Amount * cb.SLKRate
+							if cb.Clients[j].Balance >= slkaDed { cb.Clients[j].Balance -= slkaDed }
+							cb.Clients[j].TotalWithdrawn += rec.Amount
+							saveCommercialBanks()
+							break
+						}
+					}
+				}
+
+			case "LOAN_ISSUED":
+				// We received a loan — add SLK to our wallet via UTXO
+				if rec.To == bankAccount.AccountID || rec.To == mainWallet.Address {
+					utxoSet.AddUTXO(&state.UTXO{TxID: rec.ID, OutputIndex: 0,
+						Amount: rec.Amount, Address: mainWallet.Address, Spent: false})
+					utxoSet.Save()
+					refreshLabels()
+				}
+
+			case "TIMELOCK":
+				// Timelock broadcast — just record it, executed when unlocked
+				tx := BankTX{ID: rec.ID, From: rec.From, To: rec.To,
+					Amount: rec.Amount, Currency: rec.Currency, Type: "TIMELOCK_INCOMING",
+					Timestamp: rec.Timestamp, Verified: true}
+				txHistory = append(txHistory, tx)
+				saveTxHistory()
+
+			case "BANK_ANNOUNCE":
+				// New bank joined network — add to known banks
+				found := false
+				for _, kb := range knownBanks {
+					if kb.AccountID == rec.From { found = true; break }
+				}
+				if !found {
+					knownBanks = append(knownBanks, KnownBank{
+						AccountID: rec.From, Name: rec.Currency,
+						SeenAt: rec.Timestamp,
+					})
+					saveBanks()
+				}
+			}
+
 			fyne.Do(func() { rebuildRecordsBox() })
 		}
 
@@ -1343,6 +1774,7 @@ func makeUI(w fyne.Window) fyne.CanvasObject {
 		container.NewTabItem("⬆ Withdraw",   makeWithdrawTab(w)),
 		container.NewTabItem("🔄 Convert",   makeConvertTab(w)),
 		container.NewTabItem("📋 History",   makeHistoryTab(w)),
+		container.NewTabItem("🪙 UTXOs",     makeUTXOTab(w)),
 		container.NewTabItem("📊 Chart",     makeChartTab(w)),
 	)
 	walletTabs.SetTabLocation(container.TabLocationTop)
@@ -1422,6 +1854,11 @@ func refreshLabels() {
 	if slktLabel != nil { slktLabel.SetText(fmt.Sprintf("%.5f SLKT", bankAccount.SLKT)) }
 	if slkcLabel != nil { slkcLabel.SetText(fmt.Sprintf("%d SLKCT", bankAccount.SLKCT)) }
 	if walletBal != nil && mainWallet != nil { walletBal.SetText(fmt.Sprintf("%.8f SLK", mainWallet.Balance)) }
+}
+
+func hexToBytes(h string) []byte {
+	b, _ := hex.DecodeString(h)
+	return b
 }
 
 func pushNotif(text string) {
@@ -1736,16 +2173,35 @@ func makeSendTab(w fyne.Window) fyne.CanvasObject {
 						if totalShares > 0 {
 							for _, s := range cb.Shares {
 								payout := (bankFee * float64(s.Shares)) / float64(totalShares)
-								if s.HolderID == bankAccount.AccountID {
-									bankAccount.SLK += payout
+								// ── Real UTXO: fee wallet → shareholder ──
+								divTxID := fmt.Sprintf("div_%x", time.Now().UnixNano())
+								srcUTXOs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+								spentD := 0.0
+								for _, u := range srcUTXOs {
+									if spentD >= payout { break }
+									utxoSet.SpendUTXO(u.TxID, u.OutputIndex, divTxID)
+									spentD += u.Amount
 								}
-								// Record dividend payout
-								tx := BankTX{ID: fmt.Sprintf("div_%x", time.Now().UnixNano()),
-									From: "DIVIDEND", To: s.HolderID,
+								if spentD > 0 {
+									utxoSet.AddUTXO(&state.UTXO{TxID: divTxID, OutputIndex: 0, Amount: payout, Address: s.HolderID, Spent: false})
+									changeD := spentD - payout
+									if changeD > 0.000000001 {
+										utxoSet.AddUTXO(&state.UTXO{TxID: divTxID, OutputIndex: 1, Amount: changeD, Address: mainWallet.Address, Spent: false})
+									}
+									utxoSet.Save()
+								}
+								tx := BankTX{ID: divTxID, From: "DIVIDEND", To: s.HolderID,
 									Amount: payout, Currency: "SLK", Type: "DIVIDEND",
 									Timestamp: time.Now().Unix(),
 									Note: fmt.Sprintf("Dividend from %s", cb.Name), Verified: true}
 								txHistory = append(txHistory, tx)
+								if p2pNode != nil {
+									p2pNode.BroadcastBankRecord(p2p.BankRecord{
+										ID: divTxID, From: bankAccount.AccountID, To: s.HolderID,
+										Amount: payout, Currency: "SLK", TxType: "PAYMENT",
+										Timestamp: time.Now().Unix(), Verified: true,
+									})
+								}
 							}
 							saveTxHistory()
 							saveBankAccount(bankAccount)
@@ -1766,8 +2222,22 @@ func makeSendTab(w fyne.Window) fyne.CanvasObject {
 						if totalShares > 0 {
 							for _, s := range rb.Shares {
 								payout := (bankFee * float64(s.Shares)) / float64(totalShares)
-								if s.HolderID == bankAccount.AccountID {
-									bankAccount.SLK += payout
+								// Real UTXO: fee → shareholder
+								rdivTxID := fmt.Sprintf("rdiv_%x", time.Now().UnixNano())
+								rdivUTXOs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+								rdivSpent := 0.0
+								for _, u := range rdivUTXOs {
+									if rdivSpent >= payout { break }
+									utxoSet.SpendUTXO(u.TxID, u.OutputIndex, rdivTxID)
+									rdivSpent += u.Amount
+								}
+								if rdivSpent > 0 {
+									utxoSet.AddUTXO(&state.UTXO{TxID: rdivTxID, OutputIndex: 0, Amount: payout, Address: s.HolderID, Spent: false})
+									rdivChange := rdivSpent - payout
+									if rdivChange > 0.000000001 {
+										utxoSet.AddUTXO(&state.UTXO{TxID: rdivTxID, OutputIndex: 1, Amount: rdivChange, Address: mainWallet.Address, Spent: false})
+									}
+									utxoSet.Save()
 								}
 								tx := BankTX{ID: fmt.Sprintf("div_%x", time.Now().UnixNano()),
 									From: "DIVIDEND", To: s.HolderID,
@@ -2228,9 +2698,35 @@ func makeLoanListTab(w fyne.Window) fyne.CanvasObject {
 				fmt.Sprintf("Repay %.8f SLK (principal) + %.8f SLK (interest)\nTotal: %.8f SLK\n\nConfirm?", l.Principal, interest, total),
 				func(ok bool) {
 					if !ok { return }
-					bankAccount.SLK -= total
-					// Return collateral
-					bankAccount.SLK += l.CollateralSLK
+					// ── Real UTXO: borrower repays, vault releases collateral ──
+					repTxID := fmt.Sprintf("rep_%x", time.Now().UnixNano())
+					borrowerUTXOs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+					spentR := 0.0
+					for _, u := range borrowerUTXOs {
+						if spentR >= total { break }
+						utxoSet.SpendUTXO(u.TxID, u.OutputIndex, repTxID)
+						spentR += u.Amount
+					}
+					changeR := spentR - total
+					if changeR > 0.000000001 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: repTxID, OutputIndex: 1, Amount: changeR, Address: mainWallet.Address, Spent: false})
+					}
+					// Repayment → bank owner
+					utxoSet.AddUTXO(&state.UTXO{TxID: repTxID, OutputIndex: 0, Amount: total, Address: mainWallet.Address, Spent: false})
+					// Release collateral from vault back to borrower
+					if l.CollateralSLK > 0 && bankVaultWallet != nil {
+						vUTXOs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+						spentC := 0.0
+						for _, u := range vUTXOs {
+							if spentC >= l.CollateralSLK { break }
+							utxoSet.SpendUTXO(u.TxID, u.OutputIndex, repTxID+"_col")
+							spentC += u.Amount
+						}
+						if spentC > 0 {
+							utxoSet.AddUTXO(&state.UTXO{TxID: repTxID+"_col", OutputIndex: 0, Amount: l.CollateralSLK, Address: mainWallet.Address, Spent: false})
+						}
+					}
+					utxoSet.Save()
 					myLoans[lIdx].Repaid   = true
 					myLoans[lIdx].RepaidAt = time.Now().Unix()
 					saveBankAccount(bankAccount); saveLoans(); refreshLabels()
@@ -2302,10 +2798,27 @@ func makeIssueLoanTab(w fyne.Window) fyne.CanvasObject {
 				borrower, principal, interest, totalInterest, collateral, days),
 			func(ok bool) {
 				if !ok { return }
-				// Deduct principal from bank owner (sent to borrower)
-				bankAccount.SLK -= principal
-				saveBankAccount(bankAccount); refreshLabels()
-
+				// ── Real UTXO: bank sends principal to borrower, collateral locked in vault ──
+				loanTxID := fmt.Sprintf("loan_%x", time.Now().UnixNano())
+				// Spend from owner wallet
+				ownerUTXOs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+				spentL := 0.0
+				for _, u := range ownerUTXOs {
+					if spentL >= principal { break }
+					utxoSet.SpendUTXO(u.TxID, u.OutputIndex, loanTxID)
+					spentL += u.Amount
+				}
+				changeL := spentL - principal
+				if changeL > 0.000000001 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: loanTxID, OutputIndex: 1, Amount: changeL, Address: mainWallet.Address, Spent: false})
+				}
+				// Principal → borrower (they receive real SLK)
+				utxoSet.AddUTXO(&state.UTXO{TxID: loanTxID, OutputIndex: 0, Amount: principal, Address: borrower, Spent: false})
+				// Collateral → vault (locked until repaid)
+				if collateral > 0 && bankVaultWallet != nil {
+					utxoSet.AddUTXO(&state.UTXO{TxID: loanTxID+"_col", OutputIndex: 0, Amount: collateral, Address: bankVaultWallet.Address, Spent: false})
+				}
+				utxoSet.Save()
 				loan := Loan{
 					ID:            fmt.Sprintf("loan_%x", time.Now().UnixNano()),
 					BorrowerID:    borrower,
@@ -2423,12 +2936,29 @@ func makeDepositListTab(w fyne.Window) fyne.CanvasObject {
 					fmt.Sprintf("Deposit has NOT matured yet.\nEarly withdrawal forfeits all interest.\nYou will only get back %.8f SLK.\n\nWithdraw early?", d.Amount),
 					func(ok bool) {
 						if !ok { return }
-						bankAccount.SLK += d.Amount
+						// ── Real UTXO: vault → wallet (early, no interest) ──
+						ewTxID := fmt.Sprintf("wth_%x", time.Now().UnixNano())
+						if bankVaultWallet != nil {
+							vUTXOs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+							spent := 0.0
+							for _, u := range vUTXOs {
+								if spent >= d.Amount { break }
+								utxoSet.SpendUTXO(u.TxID, u.OutputIndex, ewTxID)
+								spent += u.Amount
+							}
+							if spent > 0 {
+								utxoSet.AddUTXO(&state.UTXO{TxID: ewTxID, OutputIndex: 0, Amount: d.Amount, Address: mainWallet.Address, Spent: false})
+								change := spent - d.Amount
+								if change > 0.000000001 {
+									utxoSet.AddUTXO(&state.UTXO{TxID: ewTxID, OutputIndex: 1, Amount: change, Address: bankVaultWallet.Address, Spent: false})
+								}
+								utxoSet.Save()
+							}
+						}
 						myDeposits[dIdx].Withdrawn   = true
 						myDeposits[dIdx].WithdrawnAt = time.Now().Unix()
-						saveBankAccount(bankAccount); saveDeposits(); refreshLabels()
-						tx := BankTX{ID: fmt.Sprintf("wth_%x", time.Now().UnixNano()),
-							From: d.BankName, To: bankAccount.AccountID,
+						saveDeposits(); refreshLabels()
+						tx := BankTX{ID: ewTxID, From: d.BankName, To: bankAccount.AccountID,
 							Amount: d.Amount, Currency: "SLK", Type: "EARLY_WITHDRAWAL",
 							Timestamp: time.Now().Unix(), Note: "Early withdrawal — interest forfeited", Verified: true}
 						txHistory = append(txHistory, tx); saveTxHistory()
@@ -2436,13 +2966,30 @@ func makeDepositListTab(w fyne.Window) fyne.CanvasObject {
 					}, w)
 				return
 			}
-			// Full matured withdrawal
+			// Full matured withdrawal — real UTXOs from vault
 			interest2 := (d.Amount * float64(d.InterestBP)) / 10000.0
 			total2    := d.Amount + interest2
-			bankAccount.SLK += total2
+			mwTxID := fmt.Sprintf("mwth_%x", time.Now().UnixNano())
+			if bankVaultWallet != nil {
+				vUTXOs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+				spent := 0.0
+				for _, u := range vUTXOs {
+					if spent >= d.Amount { break }
+					utxoSet.SpendUTXO(u.TxID, u.OutputIndex, mwTxID)
+					spent += u.Amount
+				}
+				if spent > 0 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: mwTxID, OutputIndex: 0, Amount: total2, Address: mainWallet.Address, Spent: false})
+					change := spent - d.Amount
+					if change > 0.000000001 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: mwTxID, OutputIndex: 1, Amount: change, Address: bankVaultWallet.Address, Spent: false})
+					}
+					utxoSet.Save()
+				}
+			}
 			myDeposits[dIdx].Withdrawn   = true
 			myDeposits[dIdx].WithdrawnAt = time.Now().Unix()
-			saveBankAccount(bankAccount); saveDeposits(); refreshLabels()
+			saveDeposits(); refreshLabels()
 			tx := BankTX{ID: fmt.Sprintf("wth_%x", time.Now().UnixNano()),
 				From: d.BankName, To: bankAccount.AccountID,
 				Amount: total2, Currency: "SLK", Type: "WITHDRAWAL_WITH_INTEREST",
@@ -2517,8 +3064,25 @@ func makeNewDepositTab(w fyne.Window) fyne.CanvasObject {
 				bankName, amt, float64(interestBP)/100.0, interest, amt+interest, matureDate.Format("Jan 02 2006")),
 			func(ok bool) {
 				if !ok { return }
-				bankAccount.SLK -= amt
-				saveBankAccount(bankAccount); refreshLabels()
+				// Real UTXO: wallet → vault for deposit
+				depEscTxID := fmt.Sprintf("depesc_%x", time.Now().UnixNano())
+				if bankVaultWallet != nil {
+					owU := utxoSet.GetUnspentForAddress(mainWallet.Address)
+					spDE := 0.0
+					for _, u := range owU {
+						if spDE >= amt { break }
+						utxoSet.SpendUTXO(u.TxID, u.OutputIndex, depEscTxID)
+						spDE += u.Amount
+					}
+					if spDE > 0 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: depEscTxID, OutputIndex: 0, Amount: amt, Address: bankVaultWallet.Address, Spent: false})
+						if spDE-amt > 0.000000001 {
+							utxoSet.AddUTXO(&state.UTXO{TxID: depEscTxID, OutputIndex: 1, Amount: spDE-amt, Address: mainWallet.Address, Spent: false})
+						}
+						utxoSet.Save()
+					}
+				}
+				refreshLabels()
 
 				dep := Deposit{
 					ID:          fmt.Sprintf("dep_%x", time.Now().UnixNano()),
@@ -2687,9 +3251,53 @@ func makeDepositTab(w fyne.Window) fyne.CanvasObject {
 			mainWallet.SyncBalance(utxoSet.GetTotalBalance(mainWallet.Address))
 			mainWallet.Save(walletPath)
 		}
-		bankAccount.SLK += amount
+		// ── VAULT: route deposit to isolated vault wallet, fee to owner ──
+		if bankVaultWallet == nil { fyne.Do(func() { result.SetText("❌ Vault wallet not initialized") }); return }
+		// Use bank fee basis points
+		bankFeeBP := int64(0)
+		if len(myCommercialBanks) > 0 { bankFeeBP = myCommercialBanks[0].FeeBasisPoints }
+		if len(myReserveBanks) > 0 { bankFeeBP = myReserveBanks[0].FeeBasisPoints }
+		vd := addVaultDeposit(verifiedAddr, amount, bankFeeBP)
+		utxoSet.AddUTXO(&state.UTXO{TxID: vd.TxID, OutputIndex: 0,
+			Amount: vd.NetAmount, Address: bankVaultWallet.Address, Spent: false})
+		if mainWallet != nil && vd.Fee > 0 {
+			feeTxID := fmt.Sprintf("fee_%x", time.Now().UnixNano())
+			utxoSet.AddUTXO(&state.UTXO{TxID: feeTxID, OutputIndex: 0,
+				Amount: vd.Fee, Address: mainWallet.Address, Spent: false})
+		}
+		utxoSet.Save()
+		// Fee goes to owner (mainWallet), vault holds client deposits separately
+		if mainWallet != nil {
+			bankAccount.SLK = utxoSet.GetTotalBalance(mainWallet.Address)
+		}
 		bankAccount.OwnerAddr = verifiedAddr
 		saveBankAccount(bankAccount)
+		// Also credit SLKA to depositor inside commercial bank client record
+		for i := range myCommercialBanks {
+			cb := &myCommercialBanks[i]
+			slkaAmount := vd.NetAmount * cb.SLKRate
+			found := false
+			for j := range cb.Clients {
+				if cb.Clients[j].AccountID == verifiedAddr || cb.Clients[j].ExternalID == verifiedAddr {
+					cb.Clients[j].Balance += slkaAmount
+					cb.Clients[j].TotalDeposited += amount
+					found = true; break
+				}
+			}
+			if !found {
+				displayName := verifiedAddr
+				if len(displayName) > 12 { displayName = displayName[:12] }
+				cb.Clients = append(cb.Clients, BankClient{
+					AccountID: verifiedAddr, ExternalID: verifiedAddr,
+					Name: displayName,
+					Balance: slkaAmount, TotalDeposited: amount, Verified: true,
+				})
+			}
+			cb.TotalDeposited += amount
+			cb.TotalFees += vd.Fee
+			saveCommercialBanks()
+			break
+		}
 
 		tx := BankTX{ID: txID, From: verifiedAddr, To: bankAccount.AccountID,
 			Amount: amount, Currency: "SLK", Type: "DEPOSIT",
@@ -2755,11 +3363,42 @@ func makeWithdrawTab(w fyne.Window) fyne.CanvasObject {
 		if amount > bankAccount.SLK {
 			fyne.Do(func() { result.SetText(fmt.Sprintf("❌ Insufficient bank balance (%.8f SLK)", bankAccount.SLK)) }); return
 		}
-		bankAccount.SLK -= amount; saveBankAccount(bankAccount)
+		// ── VAULT: only pay back original depositor ──
+		if bankVaultWallet == nil { fyne.Do(func() { result.SetText("❌ Vault not initialized") }); return }
+		foundIdx := -1
+		for i, vd := range vaultLedger {
+			if vd.DepositorAddr == addr && !vd.Withdrawn && vd.NetAmount >= amount {
+				foundIdx = i; break
+			}
+		}
+		if foundIdx == -1 {
+			fyne.Do(func() { result.SetText("❌ No vault deposit found for this address") }); return
+		}
+		vaultBal := utxoSet.GetTotalBalance(bankVaultWallet.Address)
+		if amount > vaultBal {
+			fyne.Do(func() { result.SetText(fmt.Sprintf("❌ Vault insufficient (%.8f SLK)", vaultBal)) }); return
+		}
 		txID := fmt.Sprintf("wdr_%x", time.Now().UnixNano())
+		vaultUTXOs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+		spent := 0.0
+		for _, u := range vaultUTXOs {
+			if spent >= amount { break }
+			utxoSet.SpendUTXO(u.TxID, u.OutputIndex, txID)
+			spent += u.Amount
+		}
+		change := spent - amount
+		if change > 0.000000001 {
+			utxoSet.AddUTXO(&state.UTXO{TxID: txID, OutputIndex: 1,
+				Amount: change, Address: bankVaultWallet.Address, Spent: false})
+		}
 		utxoSet.AddUTXO(&state.UTXO{TxID: txID, OutputIndex: 0, Amount: amount, Address: addr, Spent: false})
 		utxoSet.Save()
-		if mainWallet != nil { mainWallet.SyncBalance(utxoSet.GetTotalBalance(mainWallet.Address)); mainWallet.Save(walletPath) }
+		vaultLedger[foundIdx].Withdrawn = true
+		vaultLedger[foundIdx].WithdrawnAt = time.Now().Unix()
+		vaultLedger[foundIdx].WithdrawTxID = txID
+		saveVaultLedger()
+		bankAccount.SLK = utxoSet.GetTotalBalance(bankVaultWallet.Address)
+		saveBankAccount(bankAccount)
 		tx := BankTX{ID: txID, From: bankAccount.AccountID, To: addr,
 			Amount: amount, Currency: "SLK", Type: "WITHDRAW",
 			Timestamp: time.Now().Unix(), Note: "Withdrawal", Verified: true}
@@ -2981,8 +3620,24 @@ func makeMarketBrowse(w fyne.Window) fyne.CanvasObject {
 						if !ok { return }
 						marketList[lIdx].Active = false
 						marketList[lIdx].EscrowDone = true
-						bankAccount.SLK += lCopy.Amount
-						saveBankAccount(bankAccount)
+						// Real UTXO: vault → wallet on escrow cancel
+						ecCanTxID := fmt.Sprintf("eccan_%x", time.Now().UnixNano())
+						if bankVaultWallet != nil {
+							vU := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+							spEC := 0.0
+							for _, u := range vU {
+								if spEC >= lCopy.Amount { break }
+								utxoSet.SpendUTXO(u.TxID, u.OutputIndex, ecCanTxID)
+								spEC += u.Amount
+							}
+							if spEC > 0 {
+								utxoSet.AddUTXO(&state.UTXO{TxID: ecCanTxID, OutputIndex: 0, Amount: lCopy.Amount, Address: mainWallet.Address, Spent: false})
+								if spEC-lCopy.Amount > 0.000000001 {
+									utxoSet.AddUTXO(&state.UTXO{TxID: ecCanTxID, OutputIndex: 1, Amount: spEC-lCopy.Amount, Address: bankVaultWallet.Address, Spent: false})
+								}
+								utxoSet.Save()
+							}
+						}
 						saveMarket()
 						fyne.Do(func() {
 							refreshLabels()
@@ -3002,8 +3657,24 @@ func makeMarketBrowse(w fyne.Window) fyne.CanvasObject {
 							if !ok { return }
 							marketList[lIdx].Active = false
 							marketList[lIdx].EscrowDone = true
-							bankAccount.SLK += lCopy.Amount
-							saveBankAccount(bankAccount)
+							// Real UTXO: vault → wallet on delete
+							delTxID := fmt.Sprintf("del_%x", time.Now().UnixNano())
+							if bankVaultWallet != nil {
+								vUD := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+								spD := 0.0
+								for _, u := range vUD {
+									if spD >= lCopy.Amount { break }
+									utxoSet.SpendUTXO(u.TxID, u.OutputIndex, delTxID)
+									spD += u.Amount
+								}
+								if spD > 0 {
+									utxoSet.AddUTXO(&state.UTXO{TxID: delTxID, OutputIndex: 0, Amount: lCopy.Amount, Address: mainWallet.Address, Spent: false})
+									if spD-lCopy.Amount > 0.000000001 {
+										utxoSet.AddUTXO(&state.UTXO{TxID: delTxID, OutputIndex: 1, Amount: spD-lCopy.Amount, Address: bankVaultWallet.Address, Spent: false})
+									}
+									utxoSet.Save()
+								}
+							}
 							saveMarket()
 							fyne.Do(func() {
 								refreshLabels()
@@ -3172,7 +3843,24 @@ func makeMarketSell(w fyne.Window) fyne.CanvasObject {
 		switch currency {
 		case "SLK":
 			if amount > bankAccount.SLK { fyne.Do(func() { result.SetText("❌ Insufficient SLK") }); return }
-			bankAccount.SLK -= amount
+			// Real UTXO: wallet → vault for governance stake
+			govTxID := fmt.Sprintf("gov_%x", time.Now().UnixNano())
+			if bankVaultWallet != nil {
+				govUs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+				spGV := 0.0
+				for _, u := range govUs {
+					if spGV >= amount { break }
+					utxoSet.SpendUTXO(u.TxID, u.OutputIndex, govTxID)
+					spGV += u.Amount
+				}
+				if spGV > 0 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: govTxID, OutputIndex: 0, Amount: amount, Address: bankVaultWallet.Address, Spent: false})
+					if spGV-amount > 0.000000001 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: govTxID, OutputIndex: 1, Amount: spGV-amount, Address: mainWallet.Address, Spent: false})
+					}
+					utxoSet.Save()
+				}
+			}
 		case "SLKT":
 			if amount > bankAccount.SLKT { fyne.Do(func() { result.SetText("❌ Insufficient SLKT") }); return }
 			bankAccount.SLKT -= amount
@@ -3234,8 +3922,23 @@ func makeSLKTrade(w fyne.Window) fyne.CanvasObject {
 		if amount > bankAccount.SLK {
 			fyne.Do(func() { sellResult.SetText("❌ Insufficient SLK in bank") }); return
 		}
-		// Lock SLK in escrow
-		bankAccount.SLK -= amount; saveBankAccount(bankAccount)
+		// Lock SLK in vault escrow — real UTXO movement
+		escTxID := fmt.Sprintf("esc_%x", time.Now().UnixNano())
+		ownerUTXOs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+		spentE := 0.0
+		for _, u := range ownerUTXOs {
+			if spentE >= amount { break }
+			utxoSet.SpendUTXO(u.TxID, u.OutputIndex, escTxID)
+			spentE += u.Amount
+		}
+		if spentE > 0 && bankVaultWallet != nil {
+			utxoSet.AddUTXO(&state.UTXO{TxID: escTxID, OutputIndex: 0, Amount: amount, Address: bankVaultWallet.Address, Spent: false})
+			changeE := spentE - amount
+			if changeE > 0.000000001 {
+				utxoSet.AddUTXO(&state.UTXO{TxID: escTxID, OutputIndex: 1, Amount: changeE, Address: mainWallet.Address, Spent: false})
+			}
+			utxoSet.Save()
+		}
 		l := MarketListing{
 			ID: fmt.Sprintf("slktrade_%x", time.Now().UnixNano()),
 			Seller: bankAccount.AccountID, SellerName: bankAccount.Name,
@@ -3581,11 +4284,25 @@ func makeFeedTab(w fyne.Window) fyne.CanvasObject {
 		if len(text) < 2 { fyne.Do(func() { postResult.SetText("❌ Too short") }); return }
 		if p2pNode == nil { fyne.Do(func() { postResult.SetText("⚠ Not connected yet") }); return }
 		postID := fmt.Sprintf("post_%x", time.Now().UnixNano())
+		// ── Embed image as base64 so peers can actually see it ──
+		imgData := ""
+		imgPath := strings.TrimSpace(imgEntry.Text)
+		if imgPath != "" {
+			if raw, err := os.ReadFile(imgPath); err == nil {
+				// Limit to 1MB to keep P2P messages reasonable
+				if len(raw) <= 1024*1024 {
+					imgData = base64.StdEncoding.EncodeToString(raw)
+				} else {
+					fyne.Do(func() { postResult.SetText("⚠ Image too large (max 1MB)") })
+					imgPath = ""
+				}
+			}
+		}
 		post := SocialPost{ID: postID, From: bankAccount.AccountID, Name: bankAccount.Name,
-			Text: text, ImagePath: imgEntry.Text, Timestamp: time.Now().Unix()}
+			Text: text, ImagePath: imgPath, ImageData: imgData, Timestamp: time.Now().Unix()}
 		socialFeed = append(socialFeed, post); saveSocial()
 		p2pNode.BroadcastSocial(p2p.SocialMsg{ID: postID, From: bankAccount.AccountID,
-			Name: bankAccount.Name, Text: text, ImagePath: imgEntry.Text, Timestamp: time.Now().Unix()})
+			Name: bankAccount.Name, Text: text, ImagePath: imgPath, ImageData: imgData, Timestamp: time.Now().Unix()})
 		fyne.Do(func() {
 			rebuildSocialBox()
 			postResult.SetText(fmt.Sprintf("✅ Posted to %d peers!", p2pNode.PeerCount))
@@ -3760,11 +4477,14 @@ func makeBanksTab(w fyne.Window) fyne.CanvasObject {
 	myBanksTab   := container.NewTabItem("🏢 My Banks", myBanksContent)
 	clientTab    := container.NewTabItem("👤 Client Portal", clientContent)
 	ownerTab     := container.NewTabItem("👑 Owner Dashboard", ownerContent)
+	clientsContent := container.NewStack(makeAllClientsTab(w))
+	clientsTab   := container.NewTabItem("👥 Clients", clientsContent)
 	tabs := container.NewAppTabs(
 		container.NewTabItem("🏦 Directory", makeBankDirectoryTab(w)),
 		myBanksTab,
 		clientTab,
 		ownerTab,
+		clientsTab,
 		container.NewTabItem("➕ Create Bank", makeCreateBankTab(w)),
 	)
 	tabs.SetTabLocation(container.TabLocationTop)
@@ -3781,6 +4501,10 @@ func makeBanksTab(w fyne.Window) fyne.CanvasObject {
 			ownerContent.Objects = []fyne.CanvasObject{makeBankOwnerDashboard(w)}
 			ownerContent.Refresh()
 		}
+		if tab == clientsTab {
+			clientsContent.Objects = []fyne.CanvasObject{makeAllClientsTab(w)}
+			clientsContent.Refresh()
+		}
 	}
 	return tabs
 }
@@ -3788,6 +4512,145 @@ func makeBanksTab(w fyne.Window) fyne.CanvasObject {
 // ════════════════════════════════════════
 // CLIENT PORTAL — Deposit, Withdraw, Send, Pay
 // ════════════════════════════════════════
+// ════════════════════════════════════════
+// ALL CLIENTS — Depositors List
+// ════════════════════════════════════════
+func makeAllClientsTab(w fyne.Window) fyne.CanvasObject {
+	type row struct {
+		bankName  string
+		cl        BankClient
+	}
+
+	buildRows := func(searchTxt string, sortMode string) []fyne.CanvasObject {
+		var all []row
+		for _, cb := range myCommercialBanks {
+			for _, cl := range cb.Clients {
+				if searchTxt != "" {
+					q := strings.ToLower(searchTxt)
+					if !strings.Contains(strings.ToLower(cl.Name), q) &&
+					   !strings.Contains(strings.ToLower(cl.AccountID), q) &&
+					   !strings.Contains(strings.ToLower(cl.SLKAddress), q) &&
+					   !strings.Contains(strings.ToLower(cl.KYCEmail), q) {
+						continue
+					}
+				}
+				all = append(all, row{cb.Name, cl})
+			}
+		}
+
+		switch sortMode {
+		case "💰 Highest Deposit":
+			sort.Slice(all, func(i, j int) bool { return all[i].cl.TotalDeposited > all[j].cl.TotalDeposited })
+		case "💸 Lowest Deposit":
+			sort.Slice(all, func(i, j int) bool { return all[i].cl.TotalDeposited < all[j].cl.TotalDeposited })
+		case "🕐 First Joined":
+			sort.Slice(all, func(i, j int) bool { return all[i].cl.JoinedAt < all[j].cl.JoinedAt })
+		case "🕑 Last Joined":
+			sort.Slice(all, func(i, j int) bool { return all[i].cl.JoinedAt > all[j].cl.JoinedAt })
+		case "🔤 Name A-Z":
+			sort.Slice(all, func(i, j int) bool { return all[i].cl.Name < all[j].cl.Name })
+		}
+
+		rows := []fyne.CanvasObject{
+			container.NewGridWithColumns(6,
+				canvas.NewText("Bank",            color.NRGBA{R:100,G:200,B:255,A:255}),
+				canvas.NewText("Account ID",      color.NRGBA{R:100,G:200,B:255,A:255}),
+				canvas.NewText("Name",            color.NRGBA{R:100,G:200,B:255,A:255}),
+				canvas.NewText("SLK Address",     color.NRGBA{R:100,G:200,B:255,A:255}),
+				canvas.NewText("Total Deposited", color.NRGBA{R:100,G:200,B:255,A:255}),
+				canvas.NewText("Joined",          color.NRGBA{R:100,G:200,B:255,A:255}),
+			),
+			widget.NewSeparator(),
+		}
+
+		if len(all) == 0 {
+			rows = append(rows, container.NewCenter(widget.NewLabel("No clients match.")))
+			return rows
+		}
+
+		for _, r := range all {
+			cl := r.cl
+			joined := time.Unix(cl.JoinedAt, 0).Format("2006-01-02 15:04")
+			addrShort := cl.SLKAddress
+			if len(addrShort) > 16 { addrShort = addrShort[:8]+"..."+addrShort[len(addrShort)-6:] }
+			idShort := cl.AccountID
+			if len(idShort) > 12 { idShort = idShort[:12]+"..." }
+			status := "✅"
+			if !cl.Active { status = "❌" }
+			depColor := color.NRGBA{R:100,G:255,B:150,A:255}
+			if cl.TotalDeposited == 0 { depColor = color.NRGBA{R:180,G:180,B:180,A:255} }
+			rows = append(rows,
+				container.NewGridWithColumns(6,
+					widget.NewLabel(r.bankName),
+					widget.NewLabel(idShort),
+					widget.NewLabel(fmt.Sprintf("%s %s", status, cl.Name)),
+					widget.NewLabel(addrShort),
+					canvas.NewText(fmt.Sprintf("%.8f SLK", cl.TotalDeposited), depColor),
+					widget.NewLabel(joined),
+				),
+				widget.NewSeparator(),
+			)
+		}
+		return rows
+	}
+
+	title := canvas.NewText("👥 All Bank Clients & Depositors", theme.ForegroundColor())
+	title.TextSize = 18; title.TextStyle = fyne.TextStyle{Bold: true}
+
+	totalClients := 0
+	totalDeposited := 0.0
+	for _, cb := range myCommercialBanks {
+		totalClients += len(cb.Clients)
+		for _, cl := range cb.Clients { totalDeposited += cl.TotalDeposited }
+	}
+	summary := canvas.NewText(
+		fmt.Sprintf("Total Clients: %d  |  Total Deposited: %.8f SLK", totalClients, totalDeposited),
+		color.NRGBA{R:255,G:220,B:50,A:255},
+	)
+	summary.TextSize = 13; summary.TextStyle = fyne.TextStyle{Bold: true}
+
+	listBox := container.NewVBox()
+	redraw := func(search, sort string) {
+		listBox.Objects = buildRows(search, sort)
+		listBox.Refresh()
+	}
+
+	searchEntry := widget.NewEntry()
+	searchEntry.SetPlaceHolder("🔍 Search by name, account ID, address, email...")
+
+	sortSelect := widget.NewSelect([]string{
+		"💰 Highest Deposit",
+		"💸 Lowest Deposit",
+		"🕐 First Joined",
+		"🕑 Last Joined",
+		"🔤 Name A-Z",
+	}, nil)
+	sortSelect.SetSelected("💰 Highest Deposit")
+
+	sortSelect.OnChanged = func(s string) { redraw(searchEntry.Text, s) }
+	searchEntry.OnChanged  = func(s string) { redraw(s, sortSelect.Selected) }
+
+	redraw("", "💰 Highest Deposit")
+
+	toolbar := container.NewBorder(nil, nil,
+		widget.NewLabel("Sort:"), sortSelect,
+		searchEntry,
+	)
+
+	return container.NewBorder(
+		container.NewVBox(
+			container.NewCenter(title),
+			container.NewCenter(summary),
+			widget.NewSeparator(),
+			toolbar,
+			widget.NewSeparator(),
+		),
+		nil, nil, nil,
+		container.NewVScroll(listBox),
+	)
+}
+
+
 func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 	title := canvas.NewText("👤 Bank Client Portal", theme.ForegroundColor())
 	title.TextSize = 16; title.TextStyle = fyne.TextStyle{Bold: true}
@@ -3836,6 +4699,7 @@ func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 	weeksSelect.SetSelected("3 weeks")
 	depInfo := widget.NewLabel(fmt.Sprintf("Rate: 1 SLK = %.0f %s | Min lock: 3 weeks", cb.SLKRate, cb.Currency))
 	depInfo.Wrapping = fyne.TextWrapWord
+	depBox := container.NewVBox() // declared early so depBtn can reference it
 	depBtn := widget.NewButton("💰 Deposit & Lock", func() {
 		amt, err := strconv.ParseFloat(strings.TrimSpace(depAmtEntry.Text), 64)
 		if err != nil || amt <= 0 { dialog.ShowInformation("Error", "Enter valid SLK amount", w); return }
@@ -3852,7 +4716,43 @@ func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 			fmt.Sprintf("Deposit %.8f SLK | Receive: %.4f %s | Fee: %.8f SLK | Locked: %d weeks | Withdraw: %s", amt, netT, cb.Currency, fee, weeks, time.Unix(withdrawAt, 0).Format("Jan 02 2006")),
 			func(ok bool) {
 				if !ok { return }
-				bankAccount.SLK -= amt
+				// ── MOVE REAL UTXOs: client → vault, fee → owner node wallet ──
+				depositorUTXOs := utxoSet.GetUnspentForAddress(bankAccount.OwnerAddr)
+				if len(depositorUTXOs) == 0 {
+					// fallback: use main wallet UTXOs
+					depositorUTXOs = utxoSet.GetUnspentForAddress(mainWallet.Address)
+				}
+				availUTXO := 0.0
+				for _, u := range depositorUTXOs { availUTXO += u.Amount }
+				if availUTXO < amt {
+					dialog.ShowInformation("❌ Insufficient", fmt.Sprintf("Only %.8f real SLK available in wallet", availUTXO), w); return
+				}
+				depTxID := fmt.Sprintf("dep_%x", time.Now().UnixNano())
+				// Spend client UTXOs
+				spent := 0.0
+				for _, u := range depositorUTXOs {
+					if spent >= amt { break }
+					utxoSet.SpendUTXO(u.TxID, u.OutputIndex, depTxID)
+					spent += u.Amount
+				}
+				// Change back to client
+				change := spent - amt
+				if change > 0.000000001 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: depTxID, OutputIndex: 2,
+						Amount: change, Address: mainWallet.Address, Spent: false})
+				}
+				// Net amount → vault (network holds it, no one can steal)
+				netSLK := amt - fee
+				if bankVaultWallet != nil {
+					utxoSet.AddUTXO(&state.UTXO{TxID: depTxID, OutputIndex: 0,
+						Amount: netSLK, Address: bankVaultWallet.Address, Spent: false})
+				}
+				// Fee → owner node wallet
+				if fee > 0 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: depTxID, OutputIndex: 1,
+						Amount: fee, Address: mainWallet.Address, Spent: false})
+				}
+				utxoSet.Save()
 				dep := BankDeposit{
 					ID: fmt.Sprintf("dep_%x", time.Now().UnixNano()),
 					ClientID: client.AccountID,
@@ -3880,7 +4780,17 @@ func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 				broadcastBankEvent("DEPOSIT", client.AccountID, cb.ID, cb.Currency, amt)
 				balLbl.Text = fmt.Sprintf("%.8f %s", cb.Clients[ownerClientIdx].Balance, cb.Currency)
 				balLbl.Refresh()
-				slkBalLbl.SetText(fmt.Sprintf("Your SLK Wallet: %.8f SLK", bankAccount.SLK))
+				fyne.Do(func() { slkBalLbl.SetText(fmt.Sprintf("Your SLK Wallet: %.8f SLK", bankAccount.SLK)) })
+				// Refresh deposit list
+				depBox.Objects = nil
+				for i2, dep2 := range cb.Clients[ownerClientIdx].Deposits {
+					status2 := dep2.Status
+					if time.Now().Unix() >= dep2.WithdrawAt && status2 == "active" { status2 = "✅ READY" } else if status2 == "active" { status2 = "🔒 Locked" }
+					depBox.Add(widget.NewLabel(fmt.Sprintf("#%d | %.8f SLK → %.4f %s | %s | Unlock: %s",
+						i2+1, dep2.AmountSLK, dep2.AmountT, cb.Currency, status2,
+						time.Unix(dep2.WithdrawAt, 0).Format("Jan 02 2006"))))
+				}
+				depBox.Refresh()
 				dialog.ShowInformation("✅ Deposited",
 					fmt.Sprintf("Deposited %.8f SLK | Received: %.4f %s | Unlocks: %s", amt, netT, cb.Currency, time.Unix(withdrawAt, 0).Format("Jan 02 2006 15:04")), w)
 				depAmtEntry.SetText("")
@@ -3891,7 +4801,6 @@ func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 	// ── DEPOSITS LIST ──
 	depListTitle := canvas.NewText("📋 My Deposits", theme.ForegroundColor())
 	depListTitle.TextStyle = fyne.TextStyle{Bold: true}
-	depBox := container.NewVBox()
 	now := time.Now().Unix()
 	for i, dep := range client.Deposits {
 		depIdx := i
@@ -3914,18 +4823,49 @@ func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 				fmt.Sprintf("Withdraw %.8f SLK + %.8f SLK interest = %.8f SLK total", d.AmountSLK, interest, totalSLK),
 				func(ok bool) {
 					if !ok { return }
-					bankAccount.SLK += totalSLK
-					cb.Clients[ownerClientIdx].Balance -= d.AmountT
+
+					// ── VAULT: move real UTXOs back to client ──
+					wdFee := d.AmountSLK * float64(cb.FeeBasisPoints) / 10000.0
+					wdNet := totalSLK - wdFee
+					wdTxID := fmt.Sprintf("wdr_%x", time.Now().UnixNano())
+					if bankVaultWallet != nil {
+						vaultUTXOs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+						vaultBal := 0.0
+						for _, u := range vaultUTXOs { vaultBal += u.Amount }
+						if vaultBal >= wdNet {
+							spent2 := 0.0
+							for _, u := range vaultUTXOs {
+								if spent2 >= totalSLK { break }
+								utxoSet.SpendUTXO(u.TxID, u.OutputIndex, wdTxID)
+								spent2 += u.Amount
+							}
+							ch := spent2 - totalSLK
+							if ch > 0.000000001 {
+								utxoSet.AddUTXO(&state.UTXO{TxID: wdTxID, OutputIndex: 2, Amount: ch, Address: bankVaultWallet.Address, Spent: false})
+							}
+							utxoSet.AddUTXO(&state.UTXO{TxID: wdTxID, OutputIndex: 0, Amount: wdNet, Address: mainWallet.Address, Spent: false})
+							if wdFee > 0 { utxoSet.AddUTXO(&state.UTXO{TxID: wdTxID, OutputIndex: 1, Amount: wdFee, Address: mainWallet.Address, Spent: false}) }
+							utxoSet.Save()
+						}
+					}
+					_ = wdNet; _ = wdFee; _ = wdTxID
+					// subtract the deposit amount from balance — never go below zero
+					deductT := d.AmountT
+					if deductT > cb.Clients[ownerClientIdx].Balance {
+						deductT = cb.Clients[ownerClientIdx].Balance
+					}
+					cb.Clients[ownerClientIdx].Balance -= deductT
 					cb.Clients[ownerClientIdx].TotalWithdrawn += d.AmountSLK
 					cb.Clients[ownerClientIdx].Deposits[depIdx].Status = "withdrawn"
 					cb.Clients[ownerClientIdx].Deposits[depIdx].InterestEarned = interest
+					cb.TotalFees += d.AmountSLK * float64(cb.FeeBasisPoints) / 10000.0
 					saveBankAccount(bankAccount)
 					saveCommercialBanks()
 					refreshLabels()
 					broadcastBankEvent("WITHDRAW", client.AccountID, cb.ID, "SLK", totalSLK)
 					balLbl.Text = fmt.Sprintf("%.8f %s", cb.Clients[ownerClientIdx].Balance, cb.Currency)
 					balLbl.Refresh()
-					slkBalLbl.SetText(fmt.Sprintf("Your SLK Wallet: %.8f SLK", bankAccount.SLK))
+					fyne.Do(func() { slkBalLbl.SetText(fmt.Sprintf("Your SLK Wallet: %.8f SLK", bankAccount.SLK)) })
 					dialog.ShowInformation("✅ Withdrawn", fmt.Sprintf("Received %.8f SLK (includes %.8f interest)", totalSLK, interest), w)
 				}, w)
 		})
@@ -3959,6 +4899,25 @@ func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 				cb.Clients[ownerClientIdx].Balance -= amt
 				cb.TotalFees += fee / cb.SLKRate
 				bankAccount.SLK += fee / cb.SLKRate
+				// Credit recipient inside same bank
+				recipientFound := false
+				for ri := range cb.Clients {
+					if cb.Clients[ri].AccountID == to || cb.Clients[ri].ExternalID == to || cb.Clients[ri].SLKAddress == to {
+						cb.Clients[ri].Balance += netAmt
+						recipientFound = true; break
+					}
+				}
+				if !recipientFound {
+					// Cross-bank: broadcast payment so recipient bank can credit them
+					if p2pNode != nil {
+						p2pNode.BroadcastBankRecord(p2p.BankRecord{
+							ID: fmt.Sprintf("pay_%x", time.Now().UnixNano()),
+							From: client.AccountID, To: to,
+							Amount: netAmt, Currency: cb.Currency,
+							TxType: "PAYMENT", Timestamp: time.Now().Unix(), Verified: true,
+						})
+					}
+				}
 				pmt := BankPayment{
 					ID: fmt.Sprintf("pay_%x", time.Now().UnixNano()),
 					FromClient: client.AccountID,
@@ -4289,7 +5248,24 @@ func makeBankExchangeTab(w fyne.Window) fyne.CanvasObject {
 			if !isSupplySafe(o.curr, slkToBankT(netSLK, o.rate)) {
 				fyne.Do(func() { result.SetText("❌ Bank reserve insufficient — not enough SLK locked") }); return
 			}
-			bankAccount.SLK -= amt
+			// Real UTXO: wallet → vault on deposit
+			depTxID := fmt.Sprintf("dep_%x", time.Now().UnixNano())
+			if bankVaultWallet != nil {
+				depUs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+				spDT := 0.0
+				for _, u := range depUs {
+					if spDT >= amt { break }
+					utxoSet.SpendUTXO(u.TxID, u.OutputIndex, depTxID)
+					spDT += u.Amount
+				}
+				if spDT > 0 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: depTxID, OutputIndex: 0, Amount: amt, Address: bankVaultWallet.Address, Spent: false})
+					if spDT-amt > 0.000000001 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: depTxID, OutputIndex: 1, Amount: spDT-amt, Address: mainWallet.Address, Spent: false})
+					}
+					utxoSet.Save()
+				}
+			}
 			addBankBalance(o.curr, slkToBankT(netSLK, o.rate))
 			// Update bank totals
 			for i, cb := range myCommercialBanks {
@@ -4314,7 +5290,24 @@ func makeBankExchangeTab(w fyne.Window) fyne.CanvasObject {
 			slkFee := slkOut * float64(o.feeBP) / 10000.0
 			netSLK := slkOut - slkFee
 			deductBankBalance(o.curr, amt)
-			bankAccount.SLK += netSLK
+			// Real UTXO: vault → wallet on redeem
+			redeemTxID := fmt.Sprintf("redeem_%x", time.Now().UnixNano())
+			if bankVaultWallet != nil {
+				vRUs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+				spR := 0.0
+				for _, u := range vRUs {
+					if spR >= netSLK { break }
+					utxoSet.SpendUTXO(u.TxID, u.OutputIndex, redeemTxID)
+					spR += u.Amount
+				}
+				if spR > 0 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: redeemTxID, OutputIndex: 0, Amount: netSLK, Address: mainWallet.Address, Spent: false})
+					if spR-netSLK > 0.000000001 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: redeemTxID, OutputIndex: 1, Amount: spR-netSLK, Address: bankVaultWallet.Address, Spent: false})
+					}
+					utxoSet.Save()
+				}
+			}
 			for i, cb := range myCommercialBanks {
 				if cb.Name == o.bankName { myCommercialBanks[i].TotalDeposited -= slkOut; myCommercialBanks[i].TotalIssuedT -= amt; myCommercialBanks[i].TotalFees += slkFee; saveCommercialBanks() }
 			}
@@ -4457,7 +5450,43 @@ func showBankOverview(w fyne.Window, cb *CommercialBank) {
 			fmt.Sprintf("Bank: %s | Deposit: %.8f SLK | Receive: %.4f %s | Locked: %d weeks | Unlock: %s", cb.Name, amt, netT, cb.Currency, weeks, time.Unix(withdrawAt, 0).Format("Jan 02 2006")),
 			func(ok bool) {
 				if !ok { return }
-				bankAccount.SLK -= amt
+				// ── MOVE REAL UTXOs: client → vault, fee → owner node wallet ──
+				depositorUTXOs := utxoSet.GetUnspentForAddress(bankAccount.OwnerAddr)
+				if len(depositorUTXOs) == 0 {
+					// fallback: use main wallet UTXOs
+					depositorUTXOs = utxoSet.GetUnspentForAddress(mainWallet.Address)
+				}
+				availUTXO := 0.0
+				for _, u := range depositorUTXOs { availUTXO += u.Amount }
+				if availUTXO < amt {
+					dialog.ShowInformation("❌ Insufficient", fmt.Sprintf("Only %.8f real SLK available in wallet", availUTXO), w); return
+				}
+				depTxID := fmt.Sprintf("dep_%x", time.Now().UnixNano())
+				// Spend client UTXOs
+				spent := 0.0
+				for _, u := range depositorUTXOs {
+					if spent >= amt { break }
+					utxoSet.SpendUTXO(u.TxID, u.OutputIndex, depTxID)
+					spent += u.Amount
+				}
+				// Change back to client
+				change := spent - amt
+				if change > 0.000000001 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: depTxID, OutputIndex: 2,
+						Amount: change, Address: mainWallet.Address, Spent: false})
+				}
+				// Net amount → vault (network holds it, no one can steal)
+				netSLK := amt - fee
+				if bankVaultWallet != nil {
+					utxoSet.AddUTXO(&state.UTXO{TxID: depTxID, OutputIndex: 0,
+						Amount: netSLK, Address: bankVaultWallet.Address, Spent: false})
+				}
+				// Fee → owner node wallet
+				if fee > 0 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: depTxID, OutputIndex: 1,
+						Amount: fee, Address: mainWallet.Address, Spent: false})
+				}
+				utxoSet.Save()
 				dep := BankDeposit{
 					ID: fmt.Sprintf("dep_%x", time.Now().UnixNano()),
 					ClientID: bankAccount.AccountID, BankID: cb.ID,
@@ -4518,11 +5547,37 @@ func showBankOverview(w fyne.Window, cb *CommercialBank) {
 				dialog.ShowConfirm("💸 Withdraw", fmt.Sprintf("You get: %.8f SLK + %.8f interest = %.8f SLK", d.AmountSLK, interest, totalSLK),
 					func(ok bool) {
 						if !ok { return }
-						bankAccount.SLK += totalSLK
+
+					// ── VAULT: move real UTXOs back to client ──
+					wdFee := d.AmountSLK * float64(cb.FeeBasisPoints) / 10000.0
+					wdNet := totalSLK - wdFee
+					wdTxID := fmt.Sprintf("wdr_%x", time.Now().UnixNano())
+					if bankVaultWallet != nil {
+						vaultUTXOs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+						vaultBal := 0.0
+						for _, u := range vaultUTXOs { vaultBal += u.Amount }
+						if vaultBal >= wdNet {
+							spent2 := 0.0
+							for _, u := range vaultUTXOs {
+								if spent2 >= totalSLK { break }
+								utxoSet.SpendUTXO(u.TxID, u.OutputIndex, wdTxID)
+								spent2 += u.Amount
+							}
+							ch := spent2 - totalSLK
+							if ch > 0.000000001 {
+								utxoSet.AddUTXO(&state.UTXO{TxID: wdTxID, OutputIndex: 2, Amount: ch, Address: bankVaultWallet.Address, Spent: false})
+							}
+							utxoSet.AddUTXO(&state.UTXO{TxID: wdTxID, OutputIndex: 0, Amount: wdNet, Address: mainWallet.Address, Spent: false})
+							if wdFee > 0 { utxoSet.AddUTXO(&state.UTXO{TxID: wdTxID, OutputIndex: 1, Amount: wdFee, Address: mainWallet.Address, Spent: false}) }
+							utxoSet.Save()
+						}
+					}
+					_ = wdNet; _ = wdFee; _ = wdTxID
 						cb.Clients[clientIdx].Balance -= d.AmountT
 						cb.Clients[clientIdx].TotalWithdrawn += d.AmountSLK
 						cb.Clients[clientIdx].Deposits[depIdx].Status = "withdrawn"
 						cb.Clients[clientIdx].Deposits[depIdx].InterestEarned = interest
+						cb.TotalFees += d.AmountSLK * float64(cb.FeeBasisPoints) / 10000.0
 						saveBankAccount(bankAccount); saveCommercialBanks(); refreshLabels()
 						broadcastBankEvent("WITHDRAW", bankAccount.AccountID, cb.ID, "SLK", totalSLK)
 						myBalLbl.Text = fmt.Sprintf("%.4f %s", cb.Clients[clientIdx].Balance, cb.Currency)
@@ -4647,6 +5702,42 @@ func showOwnerBankOverview(w fyne.Window, cb *CommercialBank) {
 	dlg.Show()
 }
 
+// bankRating returns honest rating info about a bank
+func bankRating(feeBP int64, createdAt int64, totalDeposited float64, totalClients int) (string, string, string) {
+	// Fee rating
+	feePct := float64(feeBP) / 100.0
+	feeRating := ""
+	switch {
+	case feePct <= 1.0:  feeRating = "🟢 Low Fee ("+fmt.Sprintf("%.1f%%", feePct)+")"
+	case feePct <= 5.0:  feeRating = "🟡 Medium Fee ("+fmt.Sprintf("%.1f%%", feePct)+")"
+	case feePct <= 20.0: feeRating = "🟠 High Fee ("+fmt.Sprintf("%.1f%%", feePct)+")"
+	default:             feeRating = "🔴 Very High Fee ("+fmt.Sprintf("%.1f%%", feePct)+")"
+	}
+	// Age rating
+	agedays := int(time.Since(time.Unix(createdAt, 0)).Hours() / 24)
+	ageRating := ""
+	switch {
+	case agedays < 1:    ageRating = "🆕 Brand New (today)"
+	case agedays < 7:    ageRating = fmt.Sprintf("🆕 New (%d days old)", agedays)
+	case agedays < 30:   ageRating = fmt.Sprintf("📅 %d days old", agedays)
+	case agedays < 365:  ageRating = fmt.Sprintf("📅 %d months old", agedays/30)
+	default:             ageRating = fmt.Sprintf("🏛 %d years old", agedays/365)
+	}
+	// Trust rating
+	trustRating := ""
+	switch {
+	case totalClients == 0 && totalDeposited == 0:
+		trustRating = "⚠️ No activity yet — new bank, use with caution"
+	case totalClients < 5:
+		trustRating = fmt.Sprintf("⚠️ Low activity — %d clients, %.4f SLK deposited", totalClients, totalDeposited)
+	case totalClients < 20:
+		trustRating = fmt.Sprintf("✅ Growing — %d clients, %.4f SLK deposited", totalClients, totalDeposited)
+	default:
+		trustRating = fmt.Sprintf("✅ Established — %d clients, %.4f SLK deposited", totalClients, totalDeposited)
+	}
+	return feeRating, ageRating, trustRating
+}
+
 func makeBankDirectoryTab(w fyne.Window) fyne.CanvasObject {
 	title := canvas.NewText("🌍 SLK Banks Directory", theme.ForegroundColor())
 	title.TextSize = 16; title.TextStyle = fyne.TextStyle{Bold: true}
@@ -4670,10 +5761,13 @@ func makeBankDirectoryTab(w fyne.Window) fyne.CanvasObject {
 			nameLbl.TextStyle = fyne.TextStyle{Bold: true}; nameLbl.TextSize = 13
 			viewBtn := widget.NewButton("👁 View Bank", func() { showBankOverview(w, cbCopy) })
 			viewBtn.Importance = widget.HighImportance
+			feeR, ageR, trustR := bankRating(cb.FeeBasisPoints, cb.CreatedAt, cb.TotalDeposited, len(cb.Clients))
 			box.Add(container.NewPadded(container.NewVBox(
 				nameLbl,
-				widget.NewLabel(fmt.Sprintf("💱 Currency: %s  |  Rate: 1 SLK = %.0f %s  |  Fee: %.2f%%", cb.Currency, cb.SLKRate, cb.Currency, float64(cb.FeeBasisPoints)/100.0)),
-				widget.NewLabel(fmt.Sprintf("💰 Fees Earned: %.8f SLK  |  Total Deposited: %.8f SLK  |  Clients: %d", cb.TotalFees, cb.TotalDeposited, len(cb.Clients))),
+				widget.NewLabel(fmt.Sprintf("💱 Currency: %s  |  Rate: 1 SLK = %.0f %s", cb.Currency, cb.SLKRate, cb.Currency)),
+				widget.NewLabel(feeR+"  |  "+ageR),
+				widget.NewLabel(trustR),
+				widget.NewLabel(fmt.Sprintf("💰 Fees Earned: %.8f SLK  |  Total Deposited: %.8f SLK", cb.TotalFees, cb.TotalDeposited)),
 				viewBtn,
 				widget.NewSeparator(),
 			)))
@@ -4709,9 +5803,26 @@ func makeBankDirectoryTab(w fyne.Window) fyne.CanvasObject {
 						amt, err := strconv.ParseFloat(strings.TrimSpace(amtEntry.Text), 64)
 						if err != nil || amt <= 0 { dialog.ShowInformation("❌ Error", "Invalid amount", w); return }
 						if amt > bankAccount.SLK { dialog.ShowInformation("❌ Error", "Insufficient SLK", w); return }
-						bankAccount.SLK -= amt
-						saveBankAccount(bankAccount); refreshLabels()
-						tx := BankTX{ID: fmt.Sprintf("dep_%x", time.Now().UnixNano()),
+						// Real UTXO: wallet → target bank vault
+						b2depTxID := fmt.Sprintf("dep_%x", time.Now().UnixNano())
+						if bankVaultWallet != nil {
+							b2Us := utxoSet.GetUnspentForAddress(mainWallet.Address)
+							spB2 := 0.0
+							for _, u := range b2Us {
+								if spB2 >= amt { break }
+								utxoSet.SpendUTXO(u.TxID, u.OutputIndex, b2depTxID)
+								spB2 += u.Amount
+							}
+							if spB2 > 0 {
+								utxoSet.AddUTXO(&state.UTXO{TxID: b2depTxID, OutputIndex: 0, Amount: amt, Address: bankVaultWallet.Address, Spent: false})
+								if spB2-amt > 0.000000001 {
+									utxoSet.AddUTXO(&state.UTXO{TxID: b2depTxID, OutputIndex: 1, Amount: spB2-amt, Address: mainWallet.Address, Spent: false})
+								}
+								utxoSet.Save()
+							}
+						}
+						refreshLabels()
+						tx := BankTX{ID: b2depTxID,
 							From: bankAccount.AccountID, To: b2.AccountID,
 							Amount: amt, Currency: "SLK", Type: "DEPOSIT",
 							Timestamp: time.Now().Unix(),
@@ -4754,9 +5865,24 @@ func makeBankDirectoryTab(w fyne.Window) fyne.CanvasObject {
 						amt, err := strconv.ParseFloat(strings.TrimSpace(amtEntry.Text), 64)
 						if err != nil || amt <= 0 { dialog.ShowInformation("❌ Error", "Invalid amount", w); return }
 						if amt > bankAccount.SLK { dialog.ShowInformation("❌ Error", "Insufficient SLK", w); return }
-						bankAccount.SLK -= amt
-						saveBankAccount(bankAccount); refreshLabels()
-						tx := BankTX{ID: fmt.Sprintf("snd_%x", time.Now().UnixNano()),
+						// Real UTXO: wallet → recipient
+						b2sndTxID := fmt.Sprintf("snd_%x", time.Now().UnixNano())
+						b2sUs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+						spB2S := 0.0
+						for _, u := range b2sUs {
+							if spB2S >= amt { break }
+							utxoSet.SpendUTXO(u.TxID, u.OutputIndex, b2sndTxID)
+							spB2S += u.Amount
+						}
+						if spB2S > 0 {
+							utxoSet.AddUTXO(&state.UTXO{TxID: b2sndTxID, OutputIndex: 0, Amount: amt, Address: b2.AccountID, Spent: false})
+							if spB2S-amt > 0.000000001 {
+								utxoSet.AddUTXO(&state.UTXO{TxID: b2sndTxID, OutputIndex: 1, Amount: spB2S-amt, Address: mainWallet.Address, Spent: false})
+							}
+							utxoSet.Save()
+						}
+						refreshLabels()
+						tx := BankTX{ID: b2sndTxID,
 							From: bankAccount.AccountID, To: b2.AccountID,
 							Amount: amt, Currency: "SLK", Type: "SEND",
 							Timestamp: time.Now().Unix(), Note: noteEntry.Text, Verified: true}
@@ -4770,11 +5896,18 @@ func makeBankDirectoryTab(w fyne.Window) fyne.CanvasObject {
 				dlg.Show()
 			})
 
+			// Peer bank rating based on available info
+			peerAgeDays := int(time.Since(time.Unix(b2.SeenAt, 0)).Hours() / 24)
+			peerAge := fmt.Sprintf("⏰ Last seen: %s", time.Unix(b2.SeenAt, 0).Format("Jan 02 2006 15:04"))
+			peerTrust := "⚠️ Unknown bank — no deposit history visible"
+			if peerAgeDays == 0 { peerTrust = "🆕 Active today — new or recently connected" }
+			peerCurr := b2.Currency; if peerCurr == "" { peerCurr = "Unknown" }
 			box.Add(container.NewPadded(container.NewVBox(
 				nameLbl,
-				widget.NewLabel(fmt.Sprintf("🆔 ID: %s", b2.AccountID)),
-				widget.NewLabel(fmt.Sprintf("🌐 Website: %s", func() string { if b2.OwnerAddr != "" { return b2.OwnerAddr } else { return "Not registered" } }())),
-				widget.NewLabel(fmt.Sprintf("⏰ Last seen: %s", time.Unix(b2.SeenAt, 0).Format("Jan 02 2006 15:04"))),
+				widget.NewLabel(fmt.Sprintf("💱 Currency: %s  |  Type: %s", peerCurr, func() string { if b2.BankType != "" { return b2.BankType } else { return "unknown" } }())),
+				widget.NewLabel(peerAge),
+				widget.NewLabel(peerTrust),
+				widget.NewLabel(fmt.Sprintf("🆔 ID: %s", b2.AccountID[:min(20,len(b2.AccountID))])),
 				container.NewGridWithColumns(3, depositBtn, sendBtn, webBtn),
 				widget.NewSeparator(),
 			)))
@@ -5093,9 +6226,25 @@ func makeMyBanksTab(w fyne.Window) fyne.CanvasObject {
 				fmt.Sprintf("Lock %.8f SLK as reserve? This SLK backs your currency and protects clients.", amt),
 				func(ok bool) {
 					if !ok { return }
-					bankAccount.SLK -= amt
+					// Real UTXO: wallet → vault for reserve lock
+					rsrvTxID := fmt.Sprintf("rsrv_%x", time.Now().UnixNano())
+					if bankVaultWallet != nil {
+						rsrvUs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+						spRS := 0.0
+						for _, u := range rsrvUs {
+							if spRS >= amt { break }
+							utxoSet.SpendUTXO(u.TxID, u.OutputIndex, rsrvTxID)
+							spRS += u.Amount
+						}
+						if spRS > 0 {
+							utxoSet.AddUTXO(&state.UTXO{TxID: rsrvTxID, OutputIndex: 0, Amount: amt, Address: bankVaultWallet.Address, Spent: false})
+							if spRS-amt > 0.000000001 {
+								utxoSet.AddUTXO(&state.UTXO{TxID: rsrvTxID, OutputIndex: 1, Amount: spRS-amt, Address: mainWallet.Address, Spent: false})
+							}
+							utxoSet.Save()
+						}
+					}
 					myReserveBanks[rbIdx].LockedSLK += amt
-					saveBankAccount(bankAccount)
 					saveReserveBanks()
 					refreshLabels()
 					newRatio := 0.0
@@ -5210,24 +6359,24 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 	title := canvas.NewText("Create a Bank", theme.ForegroundColor())
 	title.TextSize = 16; title.TextStyle = fyne.TextStyle{Bold: true}
 
-	// ── LOCK: ONE bank per account — FOREVER ──
-	if len(myCommercialBanks) > 0 {
-		cb := myCommercialBanks[0]
-		lockedMsg := canvas.NewText("🏢 You already own a Commercial Bank. Only ONE bank per account allowed.", color.NRGBA{R:255,G:80,B:80,A:255})
-		lockedMsg.TextSize = 12; lockedMsg.TextStyle = fyne.TextStyle{Bold: true}
-		infoMsg := widget.NewLabel(fmt.Sprintf("Bank: %s | Currency: %s | Created: %s — One bank per account. Forever. Go to My Banks tab.", cb.Name, cb.Currency, time.Unix(cb.CreatedAt, 0).Format("Jan 02 2006")))
-		infoMsg.Wrapping = fyne.TextWrapWord
-		return container.NewVScroll(container.NewPadded(container.NewVBox(
-			container.NewCenter(title), widget.NewSeparator(),
-			container.NewPadded(lockedMsg),
-			container.NewPadded(infoMsg),
-		)))
-	}
-	if len(myReserveBanks) > 0 {
-		rb := myReserveBanks[0]
-		lockedMsg := canvas.NewText("🏛 You already own a Reserve Bank. Only ONE bank per account allowed.", color.NRGBA{R:255,G:80,B:80,A:255})
-		lockedMsg.TextSize = 12; lockedMsg.TextStyle = fyne.TextStyle{Bold: true}
-		infoMsg := widget.NewLabel(fmt.Sprintf("Bank: %s | Currency: %s | Created: %s — One bank per account. Forever. Go to My Banks tab.", rb.Name, rb.Currency, time.Unix(rb.CreatedAt, 0).Format("Jan 02 2006")))
+	// ── LOCK: ONE bank per account — FOREVER — no exceptions ──
+	if len(myCommercialBanks) > 0 || len(myReserveBanks) > 0 {
+		bankName := ""; bankCurr := ""; bankCreated := ""
+		bankType := ""
+		if len(myCommercialBanks) > 0 {
+			cb := myCommercialBanks[0]
+			bankName = cb.Name; bankCurr = cb.Currency
+			bankCreated = time.Unix(cb.CreatedAt, 0).Format("Jan 02 2006")
+			bankType = "🏢 Commercial Bank"
+		} else {
+			rb := myReserveBanks[0]
+			bankName = rb.Name; bankCurr = rb.Currency
+			bankCreated = time.Unix(rb.CreatedAt, 0).Format("Jan 02 2006")
+			bankType = "🏛 Reserve Bank"
+		}
+		lockedMsg := canvas.NewText("🔒 You already own a bank. ONE bank per account — FOREVER.", color.NRGBA{R:255,G:80,B:80,A:255})
+		lockedMsg.TextSize = 13; lockedMsg.TextStyle = fyne.TextStyle{Bold: true}
+		infoMsg := widget.NewLabel(fmt.Sprintf("Type: %s | Bank: %s | Currency: %s | Created: %s — Go to My Banks tab.", bankType, bankName, bankCurr, bankCreated))
 		infoMsg.Wrapping = fyne.TextWrapWord
 		return container.NewVScroll(container.NewPadded(container.NewVBox(
 			container.NewCenter(title), widget.NewSeparator(),
@@ -5245,19 +6394,30 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 	typeSel.SetSelected("🏢 Commercial Bank — earns fees from transactions")
 	typeDesc := widget.NewLabel("Earn a fee on every transaction. Fee is set ONCE and locked FOREVER. Get an API key to connect your website.")
 	typeDesc.Wrapping = fyne.TextWrapWord
-	typeSel.OnChanged = func(s string) {
-		if strings.Contains(s, "Reserve") {
-			typeDesc.SetText("Lock real SLK as backing and issue your own custom currency. Users can always withdraw to real SLK. Fee is PERMANENT.")
-		} else {
-			typeDesc.SetText("Earn a fee on every transaction. Fee is set ONCE and locked FOREVER. Get an API key to connect your website.")
-		}
-	}
 	nameEntry := widget.NewEntry(); nameEntry.SetPlaceHolder("Bank name (e.g. SLKafrica)")
 	currEntry := widget.NewEntry(); currEntry.SetPlaceHolder("Currency ticker (e.g. SLKA — no spaces)")
 	feeEntry  := widget.NewEntry(); feeEntry.SetPlaceHolder("Fee % (e.g. 0.5) — PERMANENT FOREVER")
 	rateEntry := widget.NewEntry(); rateEntry.SetPlaceHolder("SLK Rate: T per 1 SLK (e.g. 10000) — PERMANENT")
 	lockEntry := widget.NewEntry(); lockEntry.SetPlaceHolder("SLK to lock as reserve (Reserve Bank only)")
 	webEntry  := widget.NewEntry(); webEntry.SetPlaceHolder("Your website (e.g. https://mybank.com)")
+	reserveInfo := widget.NewLabel("")
+	reserveInfo.Wrapping = fyne.TextWrapWord
+	reserveInfo.Hide()
+	lockEntry.Hide()
+	typeSel.OnChanged = func(s string) {
+		if strings.Contains(s, "Reserve") {
+			typeDesc.SetText("Lock real SLK as gold backing → print custom currency. More SLK locked = more you can print. Users convert back to SLK anytime. Currency value = locked SLK / total issued. Fee is PERMANENT.")
+			lockEntry.Show()
+			vaultSLK := 0.0
+			if bankVaultWallet != nil { vaultSLK = utxoSet.GetTotalBalance(bankVaultWallet.Address) }
+			reserveInfo.SetText(fmt.Sprintf("🏦 Your available SLK: %.8f | Vault SLK: %.8f\n⚠ Locked SLK cannot be withdrawn — only earned back via user conversions.", bankAccount.SLK, vaultSLK))
+			reserveInfo.Show()
+		} else {
+			typeDesc.SetText("Earn a fee on every transaction. Fee is set ONCE and locked FOREVER. Get an API key to connect your website.")
+			lockEntry.Hide()
+			reserveInfo.Hide()
+		}
+	}
 
 	// Rate preview
 	ratePreview := widget.NewLabel("Rate preview: —")
@@ -5290,6 +6450,28 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 		for _, kb := range knownBanks {
 			if strings.ToLower(kb.Name) == nameLower { result.SetText("❌ Bank name taken by another peer. Choose another."); return }
 		}
+		// ── CURRENCY UNIQUENESS: block duplicate currency names unless sharing ──
+		usingExisting := strings.HasPrefix(curr, "USE:")
+		if !usingExisting {
+			exists, ownerID := currencyExistsOnNetwork(curr)
+			if exists {
+				result.SetText(fmt.Sprintf("❌ Currency %s already exists (owner: %s). Use 'USE:CURRNAME' to request sharing permission.", curr, ownerID[:12]))
+				return
+			}
+		} else {
+			// Sharing existing currency — check permission
+			actuallyCurr := strings.TrimPrefix(curr, "USE:")
+			curr = actuallyCurr
+			exists, ownerBankID := currencyExistsOnNetwork(curr)
+			if !exists { result.SetText("❌ Currency " + curr + " not found on network"); return }
+			bankID := fmt.Sprintf("bank_%x", time.Now().UnixNano())
+			if !hasPermissionToUseCurrency(curr, bankID) {
+				// Auto-request permission and notify
+				requestCurrencyPermission(curr, ownerBankID, bankID)
+				result.SetText(fmt.Sprintf("⏳ Permission requested to use %s. Owner must approve in Owner Dashboard. Check back soon.", curr))
+				return
+			}
+		}
 		feePercent, err := strconv.ParseFloat(feeStr, 64)
 		if err != nil || feePercent < 0 || feePercent > 10 { result.SetText("❌ Fee must be 0-10%"); return }
 		slkRate, rerr := strconv.ParseFloat(rateStr, 64)
@@ -5307,15 +6489,37 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 					lockAmt, lerr := strconv.ParseFloat(strings.TrimSpace(lockEntry.Text), 64)
 					if lerr != nil || lockAmt <= 0 { result.SetText("❌ Enter SLK to lock"); return }
 					if lockAmt > bankAccount.SLK { result.SetText("❌ Insufficient SLK"); return }
-					bankAccount.SLK -= lockAmt; saveBankAccount(bankAccount); refreshLabels()
+					// Lock real SLK UTXOs into vault as reserve backing
+					reserveUTXOs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+					lockTxID := fmt.Sprintf("reserve_%x", time.Now().UnixNano())
+					lockSpent := 0.0
+					for _, u := range reserveUTXOs {
+						if lockSpent >= lockAmt { break }
+						utxoSet.SpendUTXO(u.TxID, u.OutputIndex, lockTxID)
+						lockSpent += u.Amount
+					}
+					lockChange := lockSpent - lockAmt
+					if lockChange > 0.000000001 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: lockTxID, OutputIndex: 1,
+							Amount: lockChange, Address: mainWallet.Address, Spent: false})
+					}
+					// Reserve goes to vault wallet — locked forever unless users convert back
+					utxoSet.AddUTXO(&state.UTXO{TxID: lockTxID, OutputIndex: 0,
+						Amount: lockAmt, Address: bankVaultWallet.Address, Spent: false})
+					utxoSet.Save()
+					bankAccount.SLK = utxoSet.GetTotalBalance(mainWallet.Address)
+					saveBankAccount(bankAccount); refreshLabels()
+					// Issue initial currency supply = lockAmt * slkRate
+					initialSupply := lockAmt * slkRate
 					myReserveBanks = append(myReserveBanks, ReserveBank{
 						ID: bankID, Name: name, OwnerID: bankAccount.AccountID,
-						LockedSLK: lockAmt, Currency: curr, SLKRate: slkRate,
+						LockedSLK: lockAmt, IssuedAmount: initialSupply,
+						Currency: curr, SLKRate: slkRate,
 						FeeBasisPoints: feeBP, CreatedAt: time.Now().Unix(), APIKey: apiKey})
 					saveReserveBanks()
 					dialog.ShowInformation("🏛 Reserve Bank Created!",
-						fmt.Sprintf("Bank: %s | Currency: %s | 1SLK=%.0f%s | Locked:%.8fSLK | Fee:%.2f%% | API Key: %s", name, curr, slkRate, curr, lockAmt, feePercent, apiKey), w)
-					result.SetText(fmt.Sprintf("✅ Reserve Bank %s created!", name))
+						fmt.Sprintf("Bank: %s\nCurrency: %s\n1 SLK = %.0f %s\nLocked: %.8f SLK (PERMANENT)\nInitial Supply: %.0f %s\nFee: %.2f%%\nAPI Key: %s\n\n⚠ SLK is locked as gold backing.\nUsers can always convert %s back to real SLK.", name, curr, slkRate, curr, lockAmt, initialSupply, curr, feePercent, apiKey, curr), w)
+					result.SetText(fmt.Sprintf("✅ Reserve Bank %s created! %.0f %s issued.", name, initialSupply, curr))
 					nameEntry.SetText(""); currEntry.SetText(""); feeEntry.SetText("")
 					rateEntry.SetText(""); lockEntry.SetText("")
 				} else {
@@ -5343,12 +6547,14 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 			widget.NewFormItem("Currency Ticker", currEntry),
 			widget.NewFormItem("Fee Rate %", feeEntry),
 			widget.NewFormItem("SLK Rate", rateEntry),
-			widget.NewFormItem("Lock SLK (Reserve)", lockEntry),
-			widget.NewFormItem("Website URL", webEntry),
+			widget.NewFormItem("Lock SLK (Reserve only)", lockEntry),
 		),
+		reserveInfo,
 		container.NewPadded(ratePreview),
 		widget.NewSeparator(),
-		container.NewPadded(createBtn), result,
+		container.NewPadded(createBtn),
+		result,
+		widget.NewLabel(""), widget.NewLabel(""),
 	)))
 }
 
@@ -5495,6 +6701,7 @@ func decryptSecretKey(ciphertext, passphrase string) string {
 // passphrase = AccountID + machine hostname — unique per machine
 func getEncPassphrase() string {
 	host, _ := os.Hostname()
+	if bankAccount == nil { return "slk-default" + host }
 	return bankAccount.AccountID + host
 }
 
@@ -5509,6 +6716,97 @@ func shortAddr(s string) string { if len(s) > 20 { return s[:20] + "..." }; retu
 func shortStr(s string, n int) string { if len(s) > n { return s[:n] + "..." }; return s }
 func hashKey(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
 
+// ── CURRENCY REGISTRY FUNCTIONS ──
+func loadCurrencyPerms() []CurrencyPermission {
+	d, e := os.ReadFile(currencyPermsPath)
+	if e != nil { return []CurrencyPermission{} }
+	var v []CurrencyPermission
+	json.Unmarshal(d, &v)
+	return v
+}
+func saveCurrencyPerms() {
+	d, _ := json.MarshalIndent(currencyPerms, "", "  ")
+	os.WriteFile(currencyPermsPath, d, 0600)
+}
+func currencyExistsOnNetwork(curr string) (bool, string) {
+	currLower := strings.ToLower(curr)
+	for _, cb := range myCommercialBanks {
+		if strings.ToLower(cb.Currency) == currLower { return true, cb.ID }
+	}
+	for _, rb := range myReserveBanks {
+		if strings.ToLower(rb.Currency) == currLower { return true, rb.ID }
+	}
+	for _, kb := range knownBanks {
+		if strings.ToLower(kb.Currency) == currLower { return true, kb.AccountID }
+	}
+	return false, ""
+}
+func hasPermissionToUseCurrency(curr string, myBankID string) bool {
+	for _, p := range currencyPerms {
+		if strings.ToLower(p.Currency) == strings.ToLower(curr) &&
+			p.GrantedTo == myBankID && p.Approved { return true }
+	}
+	return false
+}
+func requestCurrencyPermission(curr string, ownerBankID string, myBankID string) {
+	currencyPerms = append(currencyPerms, CurrencyPermission{
+		Currency: curr, OwnerBankID: ownerBankID,
+		GrantedTo: myBankID, GrantedAt: time.Now().Unix(), Approved: false,
+	})
+	saveCurrencyPerms()
+}
+func approveCurrencyPermission(curr string, grantedTo string) {
+	for i, p := range currencyPerms {
+		if strings.ToLower(p.Currency) == strings.ToLower(curr) && p.GrantedTo == grantedTo {
+			currencyPerms[i].Approved = true
+			saveCurrencyPerms()
+			return
+		}
+	}
+}
+
+// ── VAULT FUNCTIONS ──
+func loadVaultLedger() []VaultDeposit {
+	d, e := os.ReadFile(vaultLedgerPath)
+	if e != nil { return []VaultDeposit{} }
+	var v []VaultDeposit
+	json.Unmarshal(d, &v)
+	return v
+}
+func saveVaultLedger() {
+	d, _ := json.MarshalIndent(vaultLedger, "", "  ")
+	os.WriteFile(vaultLedgerPath, d, 0600)
+}
+func vaultLastHash() string {
+	if len(vaultLedger) == 0 { return "GENESIS" }
+	return vaultLedger[len(vaultLedger)-1].Hash
+}
+func hashVaultDeposit(v VaultDeposit) string {
+	raw := fmt.Sprintf("%s|%s|%.8f|%.8f|%d|%s", v.TxID, v.DepositorAddr, v.Amount, v.NetAmount, v.Timestamp, v.PrevHash)
+	h := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(h[:])
+}
+func addVaultDeposit(depositorAddr string, amount float64, feeBP int64) VaultDeposit {
+	fee := amount * float64(feeBP) / 10000.0
+	net := amount - fee
+	txID := fmt.Sprintf("vault_%x", time.Now().UnixNano())
+	v := VaultDeposit{
+		TxID: txID, DepositorAddr: depositorAddr,
+		Amount: amount, Fee: fee, NetAmount: net,
+		Timestamp: time.Now().Unix(), PrevHash: vaultLastHash(),
+		Withdrawn: false,
+	}
+	v.Hash = hashVaultDeposit(v)
+	vaultLedger = append(vaultLedger, v)
+	saveVaultLedger()
+	return v
+}
+func loadOrCreateVaultWallet() *wallet.Wallet {
+	vw, err := wallet.LoadOrCreate(vaultPath)
+	if err != nil { fmt.Println("❌ Vault wallet error:", err); return nil }
+	fmt.Printf("🏦 Bank Vault Address: %s\n", vw.Address)
+	return vw
+}
 func loadOrCreateBankAccount() *BankAccount {
 	data, err := os.ReadFile(bankPath)
 	if err == nil {
@@ -5730,8 +7028,7 @@ func checkTimeLocks() {
 				if tl.From == bankAccount.AccountID {
 					// already deducted at creation — just mark executed
 				} else {
-					bankAccount.SLK += tl.Amount
-					saveBankAccount(bankAccount)
+					// Real UTXO: vault → recipient (already handled in executor)
 					fyne.Do(func() { refreshLabels() })
 				}
 				myTimeLocks[i].Executed = true
@@ -5757,12 +7054,36 @@ func checkRecurringPayments() {
 			if rp.EndDate > 0 && now > rp.EndDate { myRecurring[i].Active = false; changed = true; continue }
 			if rp.MaxPayments > 0 && rp.PaidCount >= rp.MaxPayments { myRecurring[i].Active = false; changed = true; continue }
 			if now >= rp.NextDue {
-				if bankAccount.SLK >= rp.Amount {
-					bankAccount.SLK -= rp.Amount
-					saveBankAccount(bankAccount)
-					fyne.Do(func() { refreshLabels() })
+				avail := utxoSet.GetTotalBalance(mainWallet.Address)
+				if avail >= rp.Amount {
+					// ── Real UTXO: spend from wallet, send to recipient ──
+					recTxID := fmt.Sprintf("rec_%x", time.Now().UnixNano())
+					senderUTXOs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+					spent := 0.0
+					for _, u := range senderUTXOs {
+						if spent >= rp.Amount { break }
+						utxoSet.SpendUTXO(u.TxID, u.OutputIndex, recTxID)
+						spent += u.Amount
+					}
+					utxoSet.AddUTXO(&state.UTXO{TxID: recTxID, OutputIndex: 0,
+						Amount: rp.Amount, Address: rp.To, Spent: false})
+					change := spent - rp.Amount
+					if change > 0.000000001 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: recTxID, OutputIndex: 1,
+							Amount: change, Address: mainWallet.Address, Spent: false})
+					}
+					utxoSet.Save()
+					// Broadcast to network
+					if p2pNode != nil {
+						p2pNode.BroadcastBankRecord(p2p.BankRecord{
+							ID: recTxID, From: rp.From, To: rp.To,
+							Amount: rp.Amount, Currency: rp.Currency, TxType: "PAYMENT",
+							Timestamp: now, Verified: true,
+						})
+					}
 					myRecurring[i].PaidCount++
-					tx := BankTX{ID: fmt.Sprintf("rec_%x", time.Now().UnixNano()),
+					fyne.Do(func() { refreshLabels() })
+					tx := BankTX{ID: recTxID,
 						From: rp.From, To: rp.To, Amount: rp.Amount, Currency: rp.Currency,
 						Type: "RECURRING", Timestamp: now, Note: rp.Note, Verified: true}
 					txHistory = append(txHistory, tx); saveTxHistory()
@@ -5890,9 +7211,24 @@ func makeMultiSigPendingTab(w fyne.Window) fyne.CanvasObject {
 				// Check if threshold met
 				if len(myMultiSigTxs[i].Signatures) >= myMultiSigTxs[i].Required {
 					// Execute
+					// Real UTXO: wallet → recipient for multisig
 					if bankAccount.SLK >= t.Amount {
-						bankAccount.SLK -= t.Amount
-						saveBankAccount(bankAccount); refreshLabels()
+						msigTxID := fmt.Sprintf("msig_%x", time.Now().UnixNano())
+						msigUs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+						spMS := 0.0
+						for _, u := range msigUs {
+							if spMS >= t.Amount { break }
+							utxoSet.SpendUTXO(u.TxID, u.OutputIndex, msigTxID)
+							spMS += u.Amount
+						}
+						if spMS > 0 {
+							utxoSet.AddUTXO(&state.UTXO{TxID: msigTxID, OutputIndex: 0, Amount: t.Amount, Address: t.To, Spent: false})
+							if spMS-t.Amount > 0.000000001 {
+								utxoSet.AddUTXO(&state.UTXO{TxID: msigTxID, OutputIndex: 1, Amount: spMS-t.Amount, Address: mainWallet.Address, Spent: false})
+							}
+							utxoSet.Save()
+						}
+						refreshLabels()
 					}
 					myMultiSigTxs[i].Executed = true
 					myMultiSigTxs[i].ExecutedAt = time.Now().Unix()
@@ -5956,7 +7292,21 @@ func makeTimeLockListTab(w fyne.Window) fyne.CanvasObject {
 					for i, t := range myTimeLocks {
 						if t.ID == tl.ID {
 							myTimeLocks[i].Cancelled = true
-							bankAccount.SLK += tl.Amount
+							// ── Real UTXO: release from vault back to owner ──
+							if bankVaultWallet != nil {
+								canTxID := fmt.Sprintf("tlcan_%x", time.Now().UnixNano())
+								vUTXOs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+								spentT := 0.0
+								for _, u := range vUTXOs {
+									if spentT >= tl.Amount { break }
+									utxoSet.SpendUTXO(u.TxID, u.OutputIndex, canTxID)
+									spentT += u.Amount
+								}
+								if spentT > 0 {
+									utxoSet.AddUTXO(&state.UTXO{TxID: canTxID, OutputIndex: 0, Amount: tl.Amount, Address: mainWallet.Address, Spent: false})
+									utxoSet.Save()
+								}
+							}
 							saveBankAccount(bankAccount); saveTimeLocks(); refreshLabels()
 							dialog.ShowInformation("✅ Cancelled", fmt.Sprintf("%.8f SLK returned to your wallet.", tl.Amount), w)
 							break
@@ -6007,18 +7357,42 @@ func makeCreateTimeLockTab(w fyne.Window) fyne.CanvasObject {
 			fmt.Sprintf("Lock %.8f SLK for %s\nUnlocks: %s\nNote: %s\n\nFunds are LOCKED until unlock date.\nYou can cancel to get them back early.", amt, to, time.Unix(unlockAt,0).Format("Jan 02 2006"), note),
 			func(ok bool) {
 				if !ok { return }
-				bankAccount.SLK -= amt
-				saveBankAccount(bankAccount); refreshLabels()
+				// ── Real UTXO: lock SLK in vault until unlock date ──
+				tlTxID := fmt.Sprintf("tl_%x", time.Now().UnixNano())
+				ownerUTXOs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+				spentTL := 0.0
+				for _, u := range ownerUTXOs {
+					if spentTL >= amt { break }
+					utxoSet.SpendUTXO(u.TxID, u.OutputIndex, tlTxID)
+					spentTL += u.Amount
+				}
+				changeTL := spentTL - amt
+				if changeTL > 0.000000001 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: tlTxID, OutputIndex: 1, Amount: changeTL, Address: mainWallet.Address, Spent: false})
+				}
+				// Lock in vault — released on unlock date
+				if bankVaultWallet != nil {
+					utxoSet.AddUTXO(&state.UTXO{TxID: tlTxID, OutputIndex: 0, Amount: amt, Address: bankVaultWallet.Address, Spent: false})
+				}
+				utxoSet.Save()
+				// Broadcast to network
+				if p2pNode != nil {
+					p2pNode.BroadcastBankRecord(p2p.BankRecord{
+						ID: tlTxID, From: bankAccount.AccountID, To: to,
+						Amount: amt, Currency: "SLK", TxType: "TIMELOCK",
+						Timestamp: time.Now().Unix(), Verified: true,
+					})
+				}
 				tl := TimeLock{
-					ID: fmt.Sprintf("tl_%x", time.Now().UnixNano()),
+					ID: tlTxID,
 					From: bankAccount.AccountID, To: to,
 					Amount: amt, Currency: "SLK", Note: note,
 					UnlockAt: unlockAt, CreatedAt: time.Now().Unix(),
 				}
 				myTimeLocks = append(myTimeLocks, tl)
-				saveTimeLocks()
+				saveTimeLocks(); refreshLabels()
 				fyne.Do(func() {
-					result.SetText(fmt.Sprintf("✅ %.8f SLK locked until %s", amt, time.Unix(unlockAt,0).Format("Jan 02 2006")))
+					result.SetText(fmt.Sprintf("✅ %.8f SLK locked in vault until %s", amt, time.Unix(unlockAt,0).Format("Jan 02 2006")))
 					toEntry.SetText(""); amtEntry.SetText(""); daysEntry.SetText(""); noteEntry.SetText("")
 				})
 			}, w)
@@ -6443,8 +7817,25 @@ func makeOrderBookTab(w fyne.Window) fyne.CanvasObject {
 						if ex.ID == o.ID {
 							exchangeOrders[i].Status = "cancelled"
 							if o.Type == "SELL" {
-								bankAccount.SLK += o.Amount
-								saveBankAccount(bankAccount)
+								// ── Real UTXO: vault → wallet on cancel ──
+								canTxID := fmt.Sprintf("excan_%x", time.Now().UnixNano())
+								if bankVaultWallet != nil {
+									vUTXOs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+									spentC := 0.0
+									for _, u := range vUTXOs {
+										if spentC >= o.Amount { break }
+										utxoSet.SpendUTXO(u.TxID, u.OutputIndex, canTxID)
+										spentC += u.Amount
+									}
+									if spentC > 0 {
+										utxoSet.AddUTXO(&state.UTXO{TxID: canTxID, OutputIndex: 0, Amount: o.Amount, Address: mainWallet.Address, Spent: false})
+										changeC := spentC - o.Amount
+										if changeC > 0.000000001 {
+											utxoSet.AddUTXO(&state.UTXO{TxID: canTxID, OutputIndex: 1, Amount: changeC, Address: bankVaultWallet.Address, Spent: false})
+										}
+										utxoSet.Save()
+									}
+								}
 								fyne.Do(func() { refreshLabels() })
 							}
 							saveExchangeOrders()
@@ -6481,8 +7872,23 @@ func makeOrderBookTab(w fyne.Window) fyne.CanvasObject {
 						if bankAccount.SLK < o.Amount {
 							dialog.ShowInformation("❌ Error", "Insufficient SLK", w); return
 						}
-						bankAccount.SLK -= o.Amount
-						saveBankAccount(bankAccount)
+						// ── Real UTXO: wallet → vault escrow when filling sell order ──
+						fillTxID := fmt.Sprintf("exfill_%x", time.Now().UnixNano())
+						fillUTXOs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+						spentF := 0.0
+						for _, u := range fillUTXOs {
+							if spentF >= o.Amount { break }
+							utxoSet.SpendUTXO(u.TxID, u.OutputIndex, fillTxID)
+							spentF += u.Amount
+						}
+						if spentF > 0 && bankVaultWallet != nil {
+							utxoSet.AddUTXO(&state.UTXO{TxID: fillTxID, OutputIndex: 0, Amount: o.Amount, Address: bankVaultWallet.Address, Spent: false})
+							changeF := spentF - o.Amount
+							if changeF > 0.000000001 {
+								utxoSet.AddUTXO(&state.UTXO{TxID: fillTxID, OutputIndex: 1, Amount: changeF, Address: mainWallet.Address, Spent: false})
+							}
+							utxoSet.Save()
+						}
 						fyne.Do(func() { refreshLabels() })
 						for i, ex := range exchangeOrders {
 							if ex.ID == o.ID {
@@ -6555,7 +7961,24 @@ func makePlaceOrderTab(w fyne.Window) fyne.CanvasObject {
 			fyne.Do(func() { result.SetText("❌ Insufficient SLK") }); return
 		}
 		if orderType == "SELL" {
-			bankAccount.SLK -= amt; saveBankAccount(bankAccount)
+			// Real UTXO: wallet → vault escrow for sell order
+			oxTxID := fmt.Sprintf("oxsell_%x", time.Now().UnixNano())
+			if bankVaultWallet != nil {
+				oxUs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+				spOX := 0.0
+				for _, u := range oxUs {
+					if spOX >= amt { break }
+					utxoSet.SpendUTXO(u.TxID, u.OutputIndex, oxTxID)
+					spOX += u.Amount
+				}
+				if spOX > 0 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: oxTxID, OutputIndex: 0, Amount: amt, Address: bankVaultWallet.Address, Spent: false})
+					if spOX-amt > 0.000000001 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: oxTxID, OutputIndex: 1, Amount: spOX-amt, Address: mainWallet.Address, Spent: false})
+					}
+					utxoSet.Save()
+				}
+			}
 			fyne.Do(func() { refreshLabels() })
 		}
 		order := p2p.ExchangeOrder{
@@ -6644,20 +8067,43 @@ func initContracts() {
 					amt = c.VestingClaimable()
 				}
 				if amt <= 0 { return fmt.Errorf("nothing to release") }
-				// Move SLK to beneficiary via recorded tx
-				tx := BankTX{
-					ID: fmt.Sprintf("sc_%x", time.Now().UnixNano()),
-					From: bankAccount.AccountID,
-					To: c.Beneficiary,
-					Amount: amt,
-					Currency: "SLK",
-					Type: "SMART_CONTRACT",
-					Timestamp: time.Now().Unix(),
-					Note: fmt.Sprintf("Contract %s: %s", c.Type, c.Title),
-					Verified: true,
+				// ── Real UTXO: vault → beneficiary ──
+				scTxID := fmt.Sprintf("sc_%x", time.Now().UnixNano())
+				if bankVaultWallet != nil {
+					vUTXOs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+					spentSC := 0.0
+					for _, u := range vUTXOs {
+						if spentSC >= amt { break }
+						utxoSet.SpendUTXO(u.TxID, u.OutputIndex, scTxID)
+						spentSC += u.Amount
+					}
+					if spentSC > 0 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: scTxID, OutputIndex: 0, Amount: amt, Address: c.Beneficiary, Spent: false})
+						changeSC := spentSC - amt
+						if changeSC > 0.000000001 {
+							utxoSet.AddUTXO(&state.UTXO{TxID: scTxID, OutputIndex: 1, Amount: changeSC, Address: bankVaultWallet.Address, Spent: false})
+						}
+						utxoSet.Save()
+					}
+				} else {
+					// Fallback: spend from main wallet
+					ownerUTXOs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+					spentSC := 0.0
+					for _, u := range ownerUTXOs {
+						if spentSC >= amt { break }
+						utxoSet.SpendUTXO(u.TxID, u.OutputIndex, scTxID)
+						spentSC += u.Amount
+					}
+					if spentSC > 0 {
+						utxoSet.AddUTXO(&state.UTXO{TxID: scTxID, OutputIndex: 0, Amount: amt, Address: c.Beneficiary, Spent: false})
+						utxoSet.Save()
+					}
 				}
-				txHistory = append(txHistory, tx)
-				saveTxHistory()
+				tx := BankTX{ID: scTxID, From: bankAccount.AccountID, To: c.Beneficiary,
+					Amount: amt, Currency: "SLK", Type: "SMART_CONTRACT",
+					Timestamp: time.Now().Unix(),
+					Note: fmt.Sprintf("Contract %s: %s", c.Type, c.Title), Verified: true}
+				txHistory = append(txHistory, tx); saveTxHistory()
 				if p2pNode != nil {
 					p2pNode.BroadcastTx(p2p.TxMsg{
 						ID: tx.ID, From: tx.From, To: tx.To,
@@ -6828,8 +8274,25 @@ func makeContractListTab(w fyne.Window) fyne.CanvasObject {
 						returnAmt := c.Amount - c.VestingClaimed
 						if c.Type == contracts.TypeSavings { returnAmt = c.SavingsBalance }
 						if returnAmt > 0 {
-							bankAccount.SLK += returnAmt
-							saveBankAccount(bankAccount); refreshLabels()
+							// Real UTXO: vault → wallet on contract cancel
+							ccTxID := fmt.Sprintf("cc_%x", time.Now().UnixNano())
+							if bankVaultWallet != nil {
+								ccUs := utxoSet.GetUnspentForAddress(bankVaultWallet.Address)
+								spCC := 0.0
+								for _, u := range ccUs {
+									if spCC >= returnAmt { break }
+									utxoSet.SpendUTXO(u.TxID, u.OutputIndex, ccTxID)
+									spCC += u.Amount
+								}
+								if spCC > 0 {
+									utxoSet.AddUTXO(&state.UTXO{TxID: ccTxID, OutputIndex: 0, Amount: returnAmt, Address: mainWallet.Address, Spent: false})
+									if spCC-returnAmt > 0.000000001 {
+										utxoSet.AddUTXO(&state.UTXO{TxID: ccTxID, OutputIndex: 1, Amount: spCC-returnAmt, Address: bankVaultWallet.Address, Spent: false})
+									}
+									utxoSet.Save()
+								}
+							}
+							refreshLabels()
 						}
 						contractStore.Save()
 						dialog.ShowInformation("✅ Cancelled",
@@ -6970,9 +8433,25 @@ func makeCreateContractTab(w fyne.Window) fyne.CanvasObject {
 			fyne.Do(func() { result.SetText("❌ " + err.Error()) }); return
 		}
 
-		// Lock SLK
-		bankAccount.SLK -= amt
-		saveBankAccount(bankAccount); refreshLabels()
+		// Lock SLK — Real UTXO: wallet → vault
+		lockTxID := fmt.Sprintf("lock_%x", time.Now().UnixNano())
+		if bankVaultWallet != nil {
+			lockUs := utxoSet.GetUnspentForAddress(mainWallet.Address)
+			spLK := 0.0
+			for _, u := range lockUs {
+				if spLK >= amt { break }
+				utxoSet.SpendUTXO(u.TxID, u.OutputIndex, lockTxID)
+				spLK += u.Amount
+			}
+			if spLK > 0 {
+				utxoSet.AddUTXO(&state.UTXO{TxID: lockTxID, OutputIndex: 0, Amount: amt, Address: bankVaultWallet.Address, Spent: false})
+				if spLK-amt > 0.000000001 {
+					utxoSet.AddUTXO(&state.UTXO{TxID: lockTxID, OutputIndex: 1, Amount: spLK-amt, Address: mainWallet.Address, Spent: false})
+				}
+				utxoSet.Save()
+			}
+		}
+		refreshLabels()
 
 		// Broadcast to network
 		if p2pNode != nil {
@@ -7486,6 +8965,78 @@ func makeBackupTab(w fyne.Window) fyne.CanvasObject {
 		fyne.Do(func() { statusBar.SetText("✅ Address copied") })
 	})
 
+	// ── PRIVATE KEY SECTION — hidden, PIN protected, copy only ──
+	privKeyDots := widget.NewLabel("••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••")
+	privKeyDots.TextStyle = fyne.TextStyle{Monospace: true}
+	privKeyDots.Wrapping = fyne.TextWrapWord
+	privKeyUnlocked := false
+
+	privKeyTitle := canvas.NewText("🔑 Private Key", color.NRGBA{R:255,G:80,B:80,A:255})
+	privKeyTitle.TextStyle = fyne.TextStyle{Bold: true}
+
+	copyPrivBtn := widget.NewButton("📋 Copy Private Key", func() {
+		if !privKeyUnlocked {
+			dialog.ShowInformation("🔒 Locked", "You must unlock the private key first.", w)
+			return
+		}
+		if mainWallet == nil { return }
+		privHex := hex.EncodeToString(mainWallet.PrivateKey)
+		w.Clipboard().SetContent(privHex)
+		fyne.Do(func() { statusBar.SetText("✅ Private key copied — keep it safe!") })
+	})
+	copyPrivBtn.Importance = widget.DangerImportance
+
+	unlockPrivBtn := widget.NewButton("🔓 Unlock Private Key", func() {
+		// PIN entry dialog
+		pinEntry := widget.NewPasswordEntry()
+		pinEntry.SetPlaceHolder("Enter your 6-digit PIN")
+		dlg := dialog.NewCustomConfirm("🔒 Enter PIN to Unlock Private Key",
+			"Unlock", "Cancel",
+			container.NewVBox(
+				widget.NewLabel("⚠ Your private key controls ALL your SLK. Never share it. Never screenshot it."),
+				widget.NewSeparator(),
+				pinEntry,
+			),
+			func(ok bool) {
+				if !ok { return }
+				pin := strings.TrimSpace(pinEntry.Text)
+				if len(pin) < 4 {
+					dialog.ShowInformation("❌ Invalid PIN", "PIN must be at least 4 digits.", w)
+					return
+				}
+				// Hash the PIN and compare to stored hash
+				h := sha256.Sum256([]byte(pin + bankAccount.AccountID))
+				pinHash := hex.EncodeToString(h[:])
+				storedHash := bankAccount.SecretKeyH
+				if storedHash == "" || pinHash == storedHash {
+					// First time — set the PIN hash
+					if storedHash == "" {
+						bankAccount.SecretKeyH = pinHash
+						saveBankAccount(bankAccount)
+					}
+					privKeyUnlocked = true
+					fyne.Do(func() {
+						privKeyDots.SetText("🔓 UNLOCKED — use Copy button below. Will re-lock on restart.")
+						statusBar.SetText("🔓 Private key unlocked")
+					})
+				} else {
+					dialog.ShowInformation("❌ Wrong PIN", "Incorrect PIN. Try again.", w)
+				}
+			}, w)
+		dlg.Show()
+	})
+
+	lockPrivBtn := widget.NewButton("🔒 Lock", func() {
+		privKeyUnlocked = false
+		fyne.Do(func() {
+			privKeyDots.SetText("••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••")
+			statusBar.SetText("🔒 Private key locked")
+		})
+	})
+
+	privKeyWarning := widget.NewLabel("⚠ Private key is NEVER displayed on screen. You can only COPY it. Re-locks on restart.")
+	privKeyWarning.Wrapping = fyne.TextWrapWord
+
 	warning := widget.NewLabel("⚠ NEVER share your backup file with anyone. It contains your private key.\n   Store it in a safe place — USB drive, encrypted folder, or printed paper.")
 	warning.Wrapping = fyne.TextWrapWord
 
@@ -7495,6 +9046,12 @@ func makeBackupTab(w fyne.Window) fyne.CanvasObject {
 		widget.NewLabel("Wallet Address:"), container.NewPadded(addrLabel),
 		widget.NewLabel("Public Key:"), container.NewPadded(pubLabel),
 		container.NewPadded(copyAddrBtn),
+		widget.NewSeparator(),
+		container.NewCenter(privKeyTitle),
+		container.NewPadded(privKeyWarning),
+		container.NewPadded(privKeyDots),
+		container.NewGridWithColumns(2, unlockPrivBtn, lockPrivBtn),
+		container.NewPadded(copyPrivBtn),
 		widget.NewSeparator(),
 		container.NewCenter(exportTitle),
 		widget.NewLabel("Export Path:"), exportPath,
@@ -7618,6 +9175,7 @@ type GUIRacer struct {
 var (
 	miningActive   bool
 	miningStop     chan struct{}
+	miningMu       sync.Mutex
 	bc             *chain.Blockchain
 	guiRacers      = make(map[string]*GUIRacer)
 	guiRacersMu    sync.Mutex
@@ -7910,8 +9468,13 @@ func makeMiningTab(w fyne.Window) fyne.CanvasObject {
 				for len(networkWinner) > 0 { <-networkWinner }
 
 				peers := 0
-				if p2pNode != nil { peers = p2pNode.PeerCount }
-				distance := chain.CalculateDistance(peers, bc.Height)
+				if p2pNode != nil {
+					// Only count active miners — not wallets/explorers/banks
+					peers = p2pNode.ActiveMiners
+					if peers == 0 { peers = 1 } // always at least 1 (yourself)
+				}
+				// AdjustedDistance auto-retargets every 100 blocks — like Bitcoin difficulty adjustment
+				distance := bc.AdjustedDistance(peers)
 				gold, _, _ := chain.CalculateTargetTime(distance)
 				raceNum := bc.Height + 1
 
@@ -8020,45 +9583,50 @@ func makeMiningTab(w fyne.Window) fyne.CanvasObject {
 						finishTime := elapsed
 						tier := consensus.DetermineTier(finishTime, gold)
 						reward := consensus.CalculateReward(tier)
+
+						// ANTI-CHEAT: only ONE winner per block height
+						miningMu.Lock()
+						if raceNum != bc.Height+1 {
+							miningMu.Unlock()
+							manager.StopRace()
+							fyne.Do(func() { statusLabel.SetText("â  Block already won â restarting...") })
+							time.Sleep(1 * time.Second)
+							raceOver = true
+							continue
+						}
+						// bc.AddTrophy creates UTXO internally -- no duplicate needed
 						newTrophy := bc.AddTrophy(addr, distance, finishTime, tier)
-
-						bankAccount.SLK += reward
-						saveBankAccount(bankAccount)
-						utxoSet.AddUTXO(&state.UTXO{
-							TxID:        fmt.Sprintf("%x", newTrophy.Hash)[:16],
-							OutputIndex: 0,
-							Amount:      reward,
-							Address:     addr,
-							FromTrophy:  bc.Height,
-							Spent:       false,
-						})
 						utxoSet.Save()
+						miningMu.Unlock()
 
-						// Compute VDF proof — real cryptographic race certificate
-					vdfIterations := uint64(distance * 1000)
-					if vdfIterations < 10000 { vdfIterations = 10000 }
-					if vdfIterations > 500000 { vdfIterations = 500000 }
-					seed := []byte(fmt.Sprintf("%s:%.0f:%.2f:%d", addr, distance, finishTime, raceNum))
-					vdfProof, vdfErr := vdfmath.Prove(seed, vdfIterations)
+						vdfIterations := uint64(distance * 1000)
+						if vdfIterations < 10000 { vdfIterations = 10000 }
+						if vdfIterations > 500000 { vdfIterations = 500000 }
+						seed := []byte(fmt.Sprintf("%s:%.0f:%.2f:%d", addr, distance, finishTime, raceNum))
+						vdfProof, vdfErr := vdfmath.Prove(seed, vdfIterations)
 
-					if p2pNode != nil {
-						msg := p2p.TrophyMsg{
-							Winner:   addr,
-							Distance: distance,
-							Time:     finishTime,
-							Tier:     int(tier),
-							Hash:     fmt.Sprintf("%x", newTrophy.Hash),
-							PrevHash: fmt.Sprintf("%x", newTrophy.PrevHash),
-							Height:   bc.Height,
+						if p2pNode != nil {
+							msg := p2p.TrophyMsg{
+								Winner:   addr,
+								Distance: distance,
+								Time:     finishTime,
+								Tier:     int(tier),
+								Hash:     fmt.Sprintf("%x", newTrophy.Hash),
+								PrevHash: fmt.Sprintf("%x", newTrophy.PrevHash),
+								Height:   bc.Height,
+							}
+							if vdfErr == nil {
+								newTrophy.VDFProof = vdfProof.Output
+								newTrophy.VDFInput = vdfProof.Input
+								newTrophy.Hash = newTrophy.ComputeHash()
+								msg.Hash = fmt.Sprintf("%x", newTrophy.Hash)
+								msg.VDFProof = vdfProof.Output
+								msg.VDFInput = vdfProof.Input
+								bc.SaveChain()
+							}
+							p2pNode.BroadcastTrophy(msg)
 						}
-						if vdfErr == nil {
-							newTrophy.VDFProof = vdfProof.Output
-							newTrophy.VDFInput = vdfProof.Input
-							msg.VDFProof = vdfProof.Output
-							msg.VDFInput = vdfProof.Input
-						}
-						p2pNode.BroadcastTrophy(msg)
-					}
+						_ = reward
 
 						tierName := newTrophy.TierName()
 						go func(tier string) {
@@ -8136,6 +9704,71 @@ func makeMiningTab(w fyne.Window) fyne.CanvasObject {
 // ════════════════════════════════════════
 // EXPLORER TAB — ALL NETWORK TROPHIES
 // ════════════════════════════════════════
+func makeUTXOTab(w fyne.Window) fyne.CanvasObject {
+	title := canvas.NewText("🪙 UTXO Breakdown", theme.ForegroundColor())
+	title.TextSize = 18; title.TextStyle = fyne.TextStyle{Bold: true}
+
+	totalLbl := widget.NewLabel("Total: —")
+	totalLbl.TextStyle = fyne.TextStyle{Bold: true}
+	countLbl := widget.NewLabel("")
+
+	box := container.NewVBox()
+	header := widget.NewLabel("  TXID                     AMOUNT           FROM TROPHY  STATUS")
+	header.TextStyle = fyne.TextStyle{Monospace: true, Bold: true}
+
+	rebuild := func() {
+		box.Objects = nil
+		if mainWallet == nil || utxoSet == nil {
+			box.Add(widget.NewLabel("Connect a wallet first."))
+			box.Refresh()
+			return
+		}
+		utxos := utxoSet.GetUnspentForAddress(mainWallet.Address)
+		var total float64
+		for _, u := range utxos { total += u.Amount }
+		totalLbl.SetText(fmt.Sprintf("Total: %.8f SLK", total))
+		countLbl.SetText(fmt.Sprintf("%d unspent UTXOs", len(utxos)))
+		if len(utxos) == 0 {
+			box.Add(widget.NewLabel("No UTXOs yet — mine or receive SLK first."))
+			box.Refresh()
+			return
+		}
+		// Newest first by FromTrophy
+		for i, j := 0, len(utxos)-1; i < j; i, j = i+1, j-1 { utxos[i], utxos[j] = utxos[j], utxos[i] }
+		for _, u := range utxos {
+			uc := u
+			status := "✅ UNSPENT"
+			if uc.Spent { status = "❌ SPENT" }
+			src := "received"
+			if uc.FromTrophy > 0 { src = fmt.Sprintf("trophy #%d", uc.FromTrophy) }
+			shortID := uc.TxID
+			if len(shortID) > 24 { shortID = shortID[:24] }
+			line := fmt.Sprintf("  %-26s %.8f SLK  %-12s  %s", shortID, uc.Amount, src, status)
+			lbl := widget.NewLabel(line)
+			lbl.TextStyle = fyne.TextStyle{Monospace: true}
+			box.Add(lbl)
+			box.Add(widget.NewSeparator())
+		}
+		box.Refresh()
+	}
+
+	rebuildBtn := widget.NewButton("🔄 Refresh", func() { rebuild() })
+	rebuildBtn.Importance = widget.HighImportance
+	rebuild()
+
+	return container.NewBorder(
+		container.NewVBox(
+			container.NewCenter(title),
+			widget.NewSeparator(),
+			container.NewHBox(totalLbl, widget.NewLabel("  |  "), countLbl),
+			rebuildBtn,
+			header,
+			widget.NewSeparator(),
+		), nil, nil, nil,
+		container.NewVScroll(box),
+	)
+}
+
 func makeExplorerTab(w fyne.Window) fyne.CanvasObject {
 	title := canvas.NewText("🌍 Block Explorer", theme.ForegroundColor())
 	title.TextSize = 18

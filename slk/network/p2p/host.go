@@ -5,8 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
@@ -84,6 +88,7 @@ type SocialMsg struct {
 	Name      string `json:"name"`
 	Text      string `json:"text"`
 	ImagePath string `json:"image_path"`
+	ImageData string `json:"image_data"` // base64 encoded image bytes
 	Likes     int    `json:"likes"`
 	Timestamp int64  `json:"timestamp"`
 }
@@ -142,6 +147,7 @@ type Node struct {
 	Ctx             context.Context
 	Cancel          context.CancelFunc
 	PeerCount       int
+	ActiveMiners    int // only peers actively RACING or JOINED
 	OnTrophy        func(TrophyMsg)
 	OnRacer         func(RacerMsg)
 	OnTx            func(TxMsg)
@@ -170,6 +176,43 @@ func loadOrCreateKey(dataDir string) (crypto.PrivKey, error) {
 	return priv, os.WriteFile(keyPath, data, 0600)
 }
 
+// detectPublicIP asks public STUN-like services for our real IP.
+// Tries multiple sources — if all fail, returns empty string and
+// lets libp2p NATPortMap handle it automatically.
+func detectPublicIP() string {
+	services := []string{
+		"https://api4.my-ip.io/ip",
+		"https://ipv4.icanhazip.com",
+		"https://api.ipify.org",
+	}
+	client := &http.Client{Timeout: 4 * time.Second}
+	for _, url := range services {
+		resp, err := client.Get(url)
+		if err != nil { continue }
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil { continue }
+		ip := strings.TrimSpace(string(body))
+		if net.ParseIP(ip) != nil && !isPrivateIP(ip) {
+			fmt.Printf("🌐 Detected public IP: %s\n", ip)
+			return ip
+		}
+	}
+	fmt.Println("⚠️  Could not detect public IP — relying on NAT discovery")
+	return ""
+}
+
+func isPrivateIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil { return true }
+	privateRanges := []string{"10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","127.0.0.0/8"}
+	for _, cidr := range privateRanges {
+		_, block, _ := net.ParseCIDR(cidr)
+		if block.Contains(parsed) { return true }
+	}
+	return false
+}
+
 func NewNode(port int, dataDir string) (*Node, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -179,8 +222,14 @@ func NewNode(port int, dataDir string) (*Node, error) {
 		return nil, fmt.Errorf("failed to load/create node key: %w", err)
 	}
 
-	publicIP := "41.90.70.28"
-	extMultiaddr, _ := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/%d", publicIP, port))
+	// Auto-detect public IP — no hardcoded addresses
+	publicIP := detectPublicIP()
+	var extAddrs []multiaddr.Multiaddr
+	if publicIP != "" {
+		if ma, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/%d", publicIP, port)); err == nil {
+			extAddrs = append(extAddrs, ma)
+		}
+	}
 
 	h, err := libp2p.New(
 		libp2p.Identity(privKey),
@@ -189,10 +238,7 @@ func NewNode(port int, dataDir string) (*Node, error) {
 			fmt.Sprintf("/ip6/::/tcp/%d", port),
 		),
 		libp2p.AddrsFactory(func(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
-			if extMultiaddr != nil {
-				addrs = append(addrs, extMultiaddr)
-			}
-			return addrs
+			return append(addrs, extAddrs...)
 		}),
 		libp2p.NATPortMap(),
 		libp2p.EnableNATService(),
@@ -300,7 +346,7 @@ func (n *Node) Start() {
 	}
 	fmt.Println("")
 	fmt.Println("🔗 SHARE THIS ADDRESS WITH OTHERS TO JOIN YOUR NETWORK:")
-	fmt.Printf("   /ip4/41.90.70.28/tcp/30303/p2p/%s\n\n", n.Host.ID())
+	// Public address is auto-detected — shown via node addrs above
 	go n.connectBootstrap()
 	go n.discoverPeers()
 	go n.listenTrophies()
@@ -415,6 +461,12 @@ func (n *Node) listenRacers() {
 		var r RacerMsg
 		if err := json.Unmarshal(msg.Data, &r); err != nil {
 			continue
+		}
+		// Track active miners — only RACING/JOINED peers affect difficulty
+		if r.Status == "RACING" || r.Status == "JOINED" {
+			n.ActiveMiners++
+		} else if r.Status == "STOPPED" || r.Status == "FINISHED" {
+			if n.ActiveMiners > 0 { n.ActiveMiners-- }
 		}
 		if n.OnRacer != nil {
 			n.OnRacer(r)

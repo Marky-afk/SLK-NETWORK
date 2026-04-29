@@ -727,7 +727,7 @@ func startMining() {
 	if p2pNode != nil {
 		p2pNode.BroadcastRacerPosition(p2p.RacerMsg{
 			Address:      myWallet.Address,
-			DistanceLeft: chain.CalculateDistance(activeRacerCount(), bc.Height),
+			DistanceLeft: bc.AdjustedDistance(activeRacerCount()),
 			Power:        0,
 			Temp:         0,
 			Status:       "JOINED",
@@ -747,7 +747,7 @@ func startMining() {
 	raceNum := bc.Height + 1
 
 	for {
-		distance := chain.CalculateDistance(activeRacerCount(), bc.Height)
+		distance := bc.AdjustedDistance(activeRacerCount())
 
 		fmt.Println()
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -941,10 +941,11 @@ func startMining() {
 
 					newTrophy := bc.AddTrophy(myWallet.Address, distance, elapsed, t)
 
-					// Attach VDF proof to trophy
+					// Attach VDF proof to trophy then recompute hash — order matters!
 					if vdfErr == nil {
 						newTrophy.VDFProof = proof.Output
 						newTrophy.VDFInput = proof.Input
+						newTrophy.Hash = newTrophy.ComputeHash() // recompute AFTER VDFProof set
 						bc.SaveChain()
 					}
 
@@ -1633,7 +1634,14 @@ func checkIncomingTransactions() {
 					return
 				}
 
-				myWallet.Balance += selectedTx.Amount
+				// Real UTXO: credit claimed SLK to receiver wallet
+				bc.UTXOSet.AddUTXO(&state.UTXO{
+					TxID: selectedTx.ID, OutputIndex: 0,
+					Amount: selectedTx.Amount,
+					Address: myWallet.Address, Spent: false,
+				})
+				bc.UTXOSet.Save()
+				myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
 				wallet.UpdatePendingTransaction(selectedTx.ID, "claimed")
 				wallet.SaveConfirmedTransaction(selectedTx)
 				mempool.Remove(selectedTx.ID)
