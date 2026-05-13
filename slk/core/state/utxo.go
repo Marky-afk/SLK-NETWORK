@@ -116,7 +116,9 @@ func (u *UTXOSet) PrintUTXOs(address string) {
 	for _, utxo := range u.UTXOs {
 		if utxo.Address == address && !utxo.Spent {
 			fmt.Printf("║  UTXO #%d:\n", count+1)
-			fmt.Printf("║    TX:      %s\n", utxo.TxID[:16]+"...")
+			txDisplay := utxo.TxID
+			if len(txDisplay) > 16 { txDisplay = txDisplay[:16] + "..." } else if txDisplay == "" { txDisplay = "(no id)" }
+			fmt.Printf("║    TX:      %s\n", txDisplay)
 			fmt.Printf("║    Amount:  %.8f SLK\n", utxo.Amount)
 			fmt.Printf("║    Trophy:  #%d\n", utxo.FromTrophy)
 			fmt.Printf("║    Status:  ✅ UNSPENT\n")

@@ -68,6 +68,8 @@ type BankAccount struct {
 	LoginFailures int   `json:"login_failures"`  // brute force tracking
 	LockedUntil   int64 `json:"locked_until"`    // lockout timestamp
 	BankBalances map[string]float64 `json:"bank_balances"`
+	FeeBasisPoints int64   `json:"fee_basis_points"`  // e.g. 500 = 5%
+	FeesEarned     float64 `json:"fees_earned"`
 }
 
 type BankTX struct {
@@ -618,13 +620,16 @@ func startAPIServer() {
 		if utxoSet != nil && mainWallet != nil {
 			bal = utxoSet.GetTotalBalance(mainWallet.Address)
 		}
+		total := bal + bankAccount.FeesEarned
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"account_id": bankAccount.AccountID,
-			"name":       bankAccount.Name,
-			"slk":        bal,
-			"slkt":       bankAccount.SLKT,
-			"slkct":      bankAccount.SLKCT,
-			"address":    bankAccount.OwnerAddr,
+			"account_id":   bankAccount.AccountID,
+			"name":         bankAccount.Name,
+			"slk":          total,
+			"slkt":         bankAccount.SLKT,
+			"slkct":        bankAccount.SLKCT,
+			"address":      bankAccount.OwnerAddr,
+			"fees_earned":  bankAccount.FeesEarned,
+			"utxo_balance": bal,
 		})
 	})
 
@@ -649,7 +654,9 @@ func startAPIServer() {
 			w.WriteHeader(400); json.NewEncoder(w).Encode(map[string]string{"error":"invalid to or amount"}); return
 		}
 		bal := utxoSet.GetTotalBalance(mainWallet.Address)
-		fee := req.Amount * 0.001
+		feeRate := float64(bankAccount.FeeBasisPoints) / 10000.0
+		if feeRate == 0 { feeRate = 0.05 } // default 5%
+		fee := req.Amount * feeRate
 		if bal < req.Amount + fee {
 			w.WriteHeader(400); json.NewEncoder(w).Encode(map[string]string{"error":"insufficient balance"}); return
 		}
@@ -668,6 +675,9 @@ func startAPIServer() {
 			Timestamp: time.Now().Unix(), Note: req.Note, Verified: true}
 		txHistory = append(txHistory, tx)
 		saveTxHistory()
+		// Credit fee to bank owner
+		bankAccount.FeesEarned += fee
+		saveBankAccount(bankAccount)
 		// Real UTXO movement handled by send function above — balance syncs via refreshLabels
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true, "tx_id": txID,
@@ -921,7 +931,7 @@ func startAPIServer() {
 			to.Balance   += req.Amount
 			myCommercialBanks[i].TotalFees += fee / cb.SLKRate
 			myCommercialBanks[i].TxCount++
-			bankAccount.SLK += fee / cb.SLKRate
+			bankAccount.FeesEarned += fee / cb.SLKRate
 			saveCommercialBanks(); saveBankAccount(bankAccount)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": true, "amount": req.Amount, "fee": fee,
@@ -1895,9 +1905,11 @@ func makeDashboardTab(w fyne.Window) fyne.CanvasObject {
 	card := func(t *canvas.Text, v *widget.Label) fyne.CanvasObject {
 		return container.NewPadded(container.NewVBox(t, v, widget.NewSeparator()))
 	}
-	grid := container.New(layout.NewGridLayout(4),
+	feesT := canvas.NewText("Fees Earned", theme.PlaceHolderColor()); feesT.TextSize = 11
+	feesLabel := widget.NewLabel(fmt.Sprintf("%.8f SLK", bankAccount.FeesEarned)); feesLabel.TextStyle = fyne.TextStyle{Bold: true}
+	grid := container.New(layout.NewGridLayout(5),
 		card(slkT, slkLabel), card(slktT, slktLabel),
-		card(slkcT, slkcLabel), card(walletT, walletBal))
+		card(slkcT, slkcLabel), card(walletT, walletBal), card(feesT, feesLabel))
 	rates := widget.NewLabel("📊  1 SLK = 1,000,000 SLKT   |   1 SLKT = 100,000 SLKCT   |   SLKCT = whole numbers")
 	rates.Alignment = fyne.TextAlignCenter
 
@@ -4685,7 +4697,7 @@ func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 	// ── BALANCE CARD ──
 	balTitle := canvas.NewText(fmt.Sprintf("💳 %s Account", cb.Currency), color.NRGBA{R:0,G:212,B:255,A:255})
 	balTitle.TextStyle = fyne.TextStyle{Bold: true}; balTitle.TextSize = 14
-	balLbl := canvas.NewText(fmt.Sprintf("%.8f %s", client.Balance, cb.Currency), color.NRGBA{R:0,G:255,B:128,A:255})
+	balLbl := canvas.NewText(fmt.Sprintf("%.4f %s", client.Balance, cb.Currency), color.NRGBA{R:0,G:255,B:128,A:255})
 	balLbl.TextSize = 22; balLbl.TextStyle = fyne.TextStyle{Bold: true}
 	slkBalLbl := widget.NewLabel(fmt.Sprintf("Your SLK Wallet: %.8f SLK", bankAccount.SLK))
 	idLbl := widget.NewLabel(fmt.Sprintf("Account ID: %s", client.AccountID))
@@ -4778,7 +4790,7 @@ func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 				saveCommercialBanks()
 				refreshLabels()
 				broadcastBankEvent("DEPOSIT", client.AccountID, cb.ID, cb.Currency, amt)
-				balLbl.Text = fmt.Sprintf("%.8f %s", cb.Clients[ownerClientIdx].Balance, cb.Currency)
+				balLbl.Text = fmt.Sprintf("%.4f %s", cb.Clients[ownerClientIdx].Balance, cb.Currency)
 				balLbl.Refresh()
 				fyne.Do(func() { slkBalLbl.SetText(fmt.Sprintf("Your SLK Wallet: %.8f SLK", bankAccount.SLK)) })
 				// Refresh deposit list
@@ -4863,7 +4875,7 @@ func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 					saveCommercialBanks()
 					refreshLabels()
 					broadcastBankEvent("WITHDRAW", client.AccountID, cb.ID, "SLK", totalSLK)
-					balLbl.Text = fmt.Sprintf("%.8f %s", cb.Clients[ownerClientIdx].Balance, cb.Currency)
+					balLbl.Text = fmt.Sprintf("%.4f %s", cb.Clients[ownerClientIdx].Balance, cb.Currency)
 					balLbl.Refresh()
 					fyne.Do(func() { slkBalLbl.SetText(fmt.Sprintf("Your SLK Wallet: %.8f SLK", bankAccount.SLK)) })
 					dialog.ShowInformation("✅ Withdrawn", fmt.Sprintf("Received %.8f SLK (includes %.8f interest)", totalSLK, interest), w)
@@ -4933,7 +4945,7 @@ func makeBankClientPortal(w fyne.Window) fyne.CanvasObject {
 				saveBankPayments()
 				saveCommercialBanks()
 				broadcastBankEvent("PAYMENT", client.AccountID, to, cb.Currency, amt)
-				balLbl.Text = fmt.Sprintf("%.8f %s", cb.Clients[ownerClientIdx].Balance, cb.Currency)
+				balLbl.Text = fmt.Sprintf("%.4f %s", cb.Clients[ownerClientIdx].Balance, cb.Currency)
 				balLbl.Refresh()
 				dialog.ShowInformation("✅ Sent", fmt.Sprintf("Sent %.4f %s | TX ID: %s", netAmt, cb.Currency, pmt.ID[:16]), w)
 				sendToEntry.SetText(""); sendAmtEntry.SetText(""); sendMemoEntry.SetText("")
@@ -5107,11 +5119,24 @@ func makeBankOwnerDashboard(w fyne.Window) fyne.CanvasObject {
 						if !ok { return }
 						cb.Clients[clIdxCopy].Deposits[depIdx].WithdrawAt = time.Now().Unix()
 						cb.Clients[clIdxCopy].Deposits[depIdx].ApprovedByOwner = true
+						cb.Clients[clIdxCopy].Deposits[depIdx].Status = "withdrawn"
+						returnAmt := cb.Clients[clIdxCopy].Deposits[depIdx].AmountSLK
+						clientAddr := cb.Clients[clIdxCopy].SLKAddress
+						if p2pNode != nil && mainWallet != nil {
+							txID := fmt.Sprintf("wdr_%x", time.Now().UnixNano())
+							p2pNode.BroadcastTx(p2p.TxMsg{
+								ID: txID, From: mainWallet.Address,
+								To: clientAddr, Amount: returnAmt,
+								Timestamp: time.Now().Unix(),
+							})
+						}
 						saveCommercialBanks()
-						dialog.ShowInformation("✅ Approved", "Client can now withdraw their deposit.", w)
+						dialog.ShowInformation("✅ Approved", fmt.Sprintf("✅ %.8f SLK sent back to %s!", returnAmt, cb.Clients[clIdxCopy].Name), w)
 					}, w)
 			})
-			if dep.Status == "withdrawn" { approveBtn.Disable() }
+			if dep.Status == "withdrawn" || dep.Status != "active" { approveBtn.Disable() }
+			if !ready && dep.Status == "active" { approveBtn.SetText("🔒 Locked — Cannot Withdraw Yet"); approveBtn.Disable() }
+			if ready && dep.Status == "active" { approveBtn.SetText("✅ Approve Withdrawal Now"); approveBtn.Enable() }
 			depRows.Add(container.NewVBox(depLbl, approveBtn, widget.NewSeparator()))
 		}
 		if len(cl.Deposits) == 0 {
@@ -9203,6 +9228,9 @@ func makeMiningTab(w fyne.Window) fyne.CanvasObject {
 	}
 	connectedLabel := widget.NewLabel("🔴 Wallet not connected")
 	connectedLabel.TextStyle = fyne.TextStyle{Bold: true}
+	if mainWallet != nil {
+		connectedLabel.SetText(fmt.Sprintf("🟢 Connected: %s | Balance: %.8f SLK", shortAddr(mainWallet.Address), mainWallet.Balance))
+	}
 	var minerWallet *wallet.Wallet
 
 	connectBtn := widget.NewButton("🔗 Connect Wallet", func() {

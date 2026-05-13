@@ -993,6 +993,7 @@ func startMining() {
 					}
 
 					myWallet.Balance += newTrophy.Reward
+					myWallet.TotalMined += newTrophy.Reward
 					// Confirm all pending mempool txs in this block
 					pending := mempool.GetAll()
 					ids := make([]string, len(pending))
@@ -1302,6 +1303,7 @@ retry:
 	}
 	// CRITICAL: Save UTXO to disk immediately
 	bc.UTXOSet.Save()
+	myWallet.TotalSent += amount
 	myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
 	myWallet.Save(walletPath)
 	fmt.Printf("💸 UTXO created for receiver: %.8f SLK → %s\n", amount, receiver)

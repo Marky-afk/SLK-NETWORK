@@ -19,6 +19,9 @@ type Wallet struct {
 	EncryptedPrivKey string  `json:"encrypted_priv_key,omitempty"`
 	Balance          float64 `json:"balance"`
 	Mnemonic         string  `json:"mnemonic,omitempty"`
+	TotalMined       float64 `json:"total_mined"`
+	TotalSent        float64 `json:"total_sent"`
+	TotalFeesPaid    float64 `json:"total_fees_paid"`
 }
 
 func LoadOrCreate(path string) (*Wallet, error) {
