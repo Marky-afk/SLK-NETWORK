@@ -1442,10 +1442,31 @@ func startP2P() {
 						bc.Trophies = append(bc.Trophies, newT)
 						bc.Height = t.Height
 						bc.TotalSupply -= newT.Reward
+						// ── UTXO: credit winner if it is us ──
+						if mainWallet != nil && t.Winner == mainWallet.Address {
+							txID := fmt.Sprintf("%x", newT.Hash)
+							existing := utxoSet.GetUnspentForAddress(mainWallet.Address)
+							alreadyHave := false
+							for _, u := range existing {
+								if u.TxID == txID { alreadyHave = true; break }
+							}
+							if !alreadyHave {
+								utxoSet.AddUTXO(&state.UTXO{
+									TxID: txID, OutputIndex: 0,
+									Amount: newT.Reward,
+									Address: mainWallet.Address,
+									FromTrophy: t.Height,
+									Spent: false,
+								})
+							}
+						}
 						added++
 					}
 					if added > 0 {
 						bc.SaveChain()
+						utxoSet.Save()
+						if mainWallet != nil { mainWallet.SyncBalance(utxoSet.GetTotalBalance(mainWallet.Address)) }
+						fyne.Do(func() { refreshLabels() })
 						fmt.Printf("⛓ Chain synced: +%d trophies, now at height %d\n", added, bc.Height)
 						fyne.Do(func() {
 							if statusBar != nil {
