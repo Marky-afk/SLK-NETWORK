@@ -7,4 +7,6 @@ cd SLK-NETWORK/slk
 chmod +x run.sh
 ./run.sh
 
-## Created by Franklin Mozack, Age 17, Nairobi Kenya
+## Created by Franklin Mozack, 
+I LOVE CAKE
+
