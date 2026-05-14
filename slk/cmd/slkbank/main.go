@@ -6306,6 +6306,67 @@ func makeMyBanksTab(w fyne.Window) fyne.CanvasObject {
 		})
 		lockBtn.Importance = widget.DangerImportance
 
+		// ── MINT MORE ──
+		mintMoreTitle := canvas.NewText("💎 Mint More Currency", theme.ForegroundColor())
+		mintMoreTitle.TextStyle = fyne.TextStyle{Bold: true}
+		getRatio := func() float64 {
+			if myReserveBanks[rbIdx].IssuedAmount <= 0 { return 999.0 }
+			return (myReserveBanks[rbIdx].LockedSLK / myReserveBanks[rbIdx].IssuedAmount) * 100
+		}
+		getMaxMintable := func() float64 {
+			return myReserveBanks[rbIdx].LockedSLK*10 - myReserveBanks[rbIdx].IssuedAmount
+		}
+		ratioGaugeLbl := widget.NewLabel("")
+		maxMintLbl := widget.NewLabel("")
+		updateGauge := func() {
+			r2 := getRatio()
+			m2 := getMaxMintable()
+			bar := ""
+			switch {
+			case r2 >= 200: bar = "🟢🟢🟢🟢🟢 EXCELLENT"
+			case r2 >= 150: bar = "🟢🟢🟢🟢⬜ STRONG"
+			case r2 >= 100: bar = "🟢🟢🟢⬜⬜ HEALTHY"
+			case r2 >= 50:  bar = "🟡🟡⬜⬜⬜ WARNING"
+			default:        bar = "🔴⬜⬜⬜⬜ CRITICAL"
+			}
+			ratioGaugeLbl.SetText(fmt.Sprintf("Reserve Health: %s (%.2f%%)", bar, r2))
+			if m2 <= 0 {
+				maxMintLbl.SetText("❌ At max supply — lock more SLK to mint more")
+			} else {
+				maxMintLbl.SetText(fmt.Sprintf("✅ Can mint up to %.8f %s more", m2, myReserveBanks[rbIdx].Currency))
+			}
+		}
+		updateGauge()
+		mintMoreEntry := widget.NewEntry()
+		mintMoreEntry.SetPlaceHolder(fmt.Sprintf("Amount of %s to mint", rb.Currency))
+		mintMoreBtn := widget.NewButton(fmt.Sprintf("💎 Mint More %s", rb.Currency), func() {
+			amt, err := strconv.ParseFloat(strings.TrimSpace(mintMoreEntry.Text), 64)
+			if err != nil || amt <= 0 { dialog.ShowInformation("Error", "Invalid amount", w); return }
+			maxMint := getMaxMintable()
+			if maxMint <= 0 {
+				dialog.ShowInformation("❌ At Limit", fmt.Sprintf("Lock more SLK to mint more %s.", myReserveBanks[rbIdx].Currency), w); return
+			}
+			if amt > maxMint {
+				dialog.ShowInformation("❌ Too Much", fmt.Sprintf("Max mintable now: %.8f %s. Lock more SLK to increase limit.", maxMint, myReserveBanks[rbIdx].Currency), w); return
+			}
+			myReserveBanks[rbIdx].IssuedAmount += amt
+			myReserveBanks[rbIdx].MintedAmount += amt
+			saveReserveBanks()
+			updateGauge()
+			issuedLbl.SetText(fmt.Sprintf("💵 %s Issued: %.8f", myReserveBanks[rbIdx].Currency, myReserveBanks[rbIdx].IssuedAmount))
+			ratioLbl.SetText(fmt.Sprintf("📊 Reserve Ratio: %.2f%%", getRatio()))
+			mintMoreEntry.SetText("")
+			pushNotif(fmt.Sprintf("💎 Minted %.8f %s", amt, myReserveBanks[rbIdx].Currency))
+			dialog.ShowInformation("✅ Minted",
+				fmt.Sprintf("Minted %.8f %s\nTotal: %.8f %s\nRatio: %.2f%%\nBacked by: %.8f SLK",
+					amt, myReserveBanks[rbIdx].Currency,
+					myReserveBanks[rbIdx].IssuedAmount, myReserveBanks[rbIdx].Currency,
+					getRatio(), myReserveBanks[rbIdx].LockedSLK), w)
+		})
+		mintMoreBtn.Importance = widget.HighImportance
+		autoMintLbl := widget.NewLabel(fmt.Sprintf("⚡ Every transaction auto-mints 0.01%% of its value to your reserve.", rb.Currency))
+		autoMintLbl.Wrapping = fyne.TextWrapWord
+
 		// ── INTEREST RATE ──
 		intTitle2 := canvas.NewText("💹 Base Interest Rate Policy", theme.ForegroundColor())
 		intTitle2.TextStyle = fyne.TextStyle{Bold: true}
@@ -6379,6 +6440,11 @@ func makeMyBanksTab(w fyne.Window) fyne.CanvasObject {
 			lockTitle, lockWarn,
 			widget.NewForm(widget.NewFormItem("SLK Amount", lockEntry)),
 			lockBtn,
+			widget.NewSeparator(),
+			// Mint More
+			mintMoreTitle, ratioGaugeLbl, maxMintLbl, autoMintLbl,
+			widget.NewForm(widget.NewFormItem(fmt.Sprintf("Mint %s", rb.Currency), mintMoreEntry)),
+			mintMoreBtn,
 			widget.NewSeparator(),
 			// Interest
 			intTitle2,
