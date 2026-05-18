@@ -15,9 +15,17 @@ import (
 )
 
 var (
-	stressMu  sync.Mutex
-	stressCmd *exec.Cmd
+	stressMu    sync.Mutex
+	stressCmd   *exec.Cmd
+	raceRunning bool
+	raceMu      sync.Mutex
 )
+
+func IsRaceRunning() bool {
+	raceMu.Lock()
+	defer raceMu.Unlock()
+	return raceRunning
+}
 
 // launchStress starts stress-ng from Go — avoids CGo fork() issue
 func launchStress(full bool) {
@@ -83,6 +91,9 @@ func StartRace(discipline int, distance float64) error {
 	if result != 0 {
 		return fmt.Errorf("failed to start race: error code %d", result)
 	}
+	raceMu.Lock()
+	raceRunning = true
+	raceMu.Unlock()
 	launchStress(true) // launch stress-ng from Go — fixes CGo fork() issue
 	return nil
 }

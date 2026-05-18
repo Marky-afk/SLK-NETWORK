@@ -377,9 +377,13 @@ p2pNode.Start()
 	go func() {
 		<-sigChan
 		fmt.Println("\n\n🛑 Shutting down node...")
-		manager.StopRace()
+		if manager.IsRaceRunning() {
+			manager.StopRace()
+		}
 		myWallet.Save(walletPath)
-		os.Exit(0)
+		p2pNode.Stop()
+		time.Sleep(500 * time.Millisecond)
+			os.Exit(0)
 	}()
 
 	// Start HTTP API on port 8080
