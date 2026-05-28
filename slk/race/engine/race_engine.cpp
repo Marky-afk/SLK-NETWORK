@@ -21,7 +21,30 @@ static RacerTelemetry g_telemetry = {0};
 static pthread_t      g_telemetry_thread;
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static double read_cpu_usage_percent() {
+    // Read CPU usage from /proc/stat — no root needed
+    unsigned long long u1[4], u2[4];
+    FILE *f = fopen("/proc/stat", "r");
+    if (!f) return 50.0;
+    fscanf(f, "cpu %llu %llu %llu %llu", &u1[0], &u1[1], &u1[2], &u1[3]);
+    fclose(f);
+    usleep(200000);
+    f = fopen("/proc/stat", "r");
+    if (!f) return 50.0;
+    fscanf(f, "cpu %llu %llu %llu %llu", &u2[0], &u2[1], &u2[2], &u2[3]);
+    fclose(f);
+    unsigned long long total1 = u1[0]+u1[1]+u1[2]+u1[3];
+    unsigned long long total2 = u2[0]+u2[1]+u2[2]+u2[3];
+    unsigned long long idle1  = u1[3];
+    unsigned long long idle2  = u2[3];
+    unsigned long long dtotal = total2 - total1;
+    unsigned long long didle  = idle2  - idle1;
+    if (dtotal == 0) return 50.0;
+    return 100.0 * (1.0 - (double)didle / (double)dtotal);
+}
+
 static double read_cpu_power() {
+    // Try RAPL first (most accurate, needs root)
     const char* paths[] = {
         "/sys/class/powercap/intel-rapl:0/energy_uj",
         "/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj",
@@ -33,15 +56,19 @@ static double read_cpu_power() {
         if (!f) continue;
         fscanf(f, "%llu", &e1);
         fclose(f);
-        usleep(500000);
+        usleep(200000);
         f = fopen(paths[i], "r");
         if (!f) continue;
         fscanf(f, "%llu", &e2);
         fclose(f);
-        double watts = (double)(e2 - e1) / 500000.0;
-        if (watts >= 1.0 && watts <= 500.0) return watts;
+        double watts = (double)(e2 - e1) / 200000.0;
+        if (watts >= 1.0 && watts <= 300.0) return watts;
     }
-    return 12.0;
+    // Fallback: estimate from CPU usage via /proc/stat (no root needed)
+    double usage = read_cpu_usage_percent();
+    double tdp   = 35.0;  // HP EliteBook TDP watts
+    double idle  = 5.0;   // idle watts
+    return idle + (tdp - idle) * (usage / 100.0);
 }
 
 static void kill_stress() {
