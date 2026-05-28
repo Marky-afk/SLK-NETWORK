@@ -977,8 +977,9 @@ func startMining() {
 					fmt.Printf("  Hash:     %x\n", newTrophy.Hash)
 					fmt.Printf("  PrevHash: %x\n", newTrophy.PrevHash)
 
-					// Broadcast trophy to real network
+					// Broadcast trophy to real network — non-blocking
 					if p2pNode != nil {
+					go func() {
 						err := p2pNode.BroadcastTrophy(p2p.TrophyMsg{
 							Winner:   myWallet.Address,
 							Distance: distance,
@@ -994,9 +995,9 @@ func startMining() {
 							fmt.Printf("⚠️  Broadcast failed: %v\n", err)
 						} else {
 							fmt.Printf("📡 Trophy broadcast to %d peers on the network!\n", p2pNode.PeerCount)
-					// Desktop popup notification
-					go func(rn uint64, peers int) {
-						msg := fmt.Sprintf("Race #%d won! +0.00800000 SLK | VDF verified | %d peers notified", rn, peers)
+						}
+						// Desktop popup notification
+						msg := fmt.Sprintf("Race #%d won! +0.00800000 SLK | VDF verified | %d peers notified", raceNum, p2pNode.PeerCount)
 						switch runtime.GOOS {
 						case "linux":
 							exec.Command("notify-send", "🏆 SLK TROPHY WON!", msg, "--urgency=critical").Run()
@@ -1007,9 +1008,7 @@ func startMining() {
 							exec.Command("powershell", "-Command",
 								fmt.Sprintf("[System.Windows.Forms.MessageBox]::Show('%s','SLK Trophy Won!')", msg)).Run()
 						}
-					}(raceNum, p2pNode.PeerCount)
-					
-						}
+					}()
 					}
 
 					myWallet.Balance += newTrophy.Reward
