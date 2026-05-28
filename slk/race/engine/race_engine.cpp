@@ -26,12 +26,12 @@ static double read_cpu_usage_percent() {
     unsigned long long u1[4], u2[4];
     FILE *f = fopen("/proc/stat", "r");
     if (!f) return 50.0;
-    fscanf(f, "cpu %llu %llu %llu %llu", &u1[0], &u1[1], &u1[2], &u1[3]);
+    if(fscanf(f, "cpu %llu %llu %llu %llu", &u1[0], &u1[1], &u1[2], &u1[3]) < 0) {}
     fclose(f);
     usleep(200000);
     f = fopen("/proc/stat", "r");
     if (!f) return 50.0;
-    fscanf(f, "cpu %llu %llu %llu %llu", &u2[0], &u2[1], &u2[2], &u2[3]);
+    if(fscanf(f, "cpu %llu %llu %llu %llu", &u2[0], &u2[1], &u2[2], &u2[3]) < 0) {}
     fclose(f);
     unsigned long long total1 = u1[0]+u1[1]+u1[2]+u1[3];
     unsigned long long total2 = u2[0]+u2[1]+u2[2]+u2[3];
@@ -54,12 +54,12 @@ static double read_cpu_power() {
         unsigned long long e1 = 0, e2 = 0;
         FILE *f = fopen(paths[i], "r");
         if (!f) continue;
-        fscanf(f, "%llu", &e1);
+        if(fscanf(f, "%llu", &e1) < 0) {}
         fclose(f);
         usleep(200000);
         f = fopen(paths[i], "r");
         if (!f) continue;
-        fscanf(f, "%llu", &e2);
+        if(fscanf(f, "%llu", &e2) < 0) {}
         fclose(f);
         double watts = (double)(e2 - e1) / 200000.0;
         if (watts >= 1.0 && watts <= 300.0) return watts;
