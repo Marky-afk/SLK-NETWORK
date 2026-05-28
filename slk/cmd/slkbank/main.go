@@ -9709,17 +9709,22 @@ func makeMiningTab(w fyne.Window) fyne.CanvasObject {
 							raceOver = true
 							continue
 						}
-						// bc.AddTrophy creates UTXO internally -- no duplicate needed
-						newTrophy := bc.AddTrophy(addr, distance, finishTime, tier)
-						utxoSet.Save()
-						miningMu.Unlock()
-
+						// VDF computed BEFORE AddTrophy so hash is final — single save, no duplicate
 						vdfIterations := uint64(distance * 1000)
 						if vdfIterations < 10000 { vdfIterations = 10000 }
 						if vdfIterations > 500000 { vdfIterations = 500000 }
 						seed := []byte(fmt.Sprintf("%s:%.0f:%.2f:%d", addr, distance, finishTime, raceNum))
 						vdfProof, vdfErr := vdfmath.Prove(seed, vdfIterations)
-
+						newTrophy := bc.AddTrophy(addr, distance, finishTime, tier)
+						if vdfErr == nil {
+							newTrophy.VDFProof = vdfProof.Output
+							newTrophy.VDFInput = vdfProof.Input
+							newTrophy.Hash = newTrophy.ComputeHash()
+							bc.Trophies[len(bc.Trophies)-1] = newTrophy
+						}
+						bc.SaveChain()
+						utxoSet.Save()
+						miningMu.Unlock()
 						if p2pNode != nil {
 							msg := p2p.TrophyMsg{
 								Winner:   addr,
@@ -9729,17 +9734,12 @@ func makeMiningTab(w fyne.Window) fyne.CanvasObject {
 								Hash:     fmt.Sprintf("%x", newTrophy.Hash),
 								PrevHash: fmt.Sprintf("%x", newTrophy.PrevHash),
 								Height:   bc.Height,
+								VDFProof: newTrophy.VDFProof,
+								VDFInput: newTrophy.VDFInput,
 							}
-							if vdfErr == nil {
-								newTrophy.VDFProof = vdfProof.Output
-								newTrophy.VDFInput = vdfProof.Input
-								newTrophy.Hash = newTrophy.ComputeHash()
-								msg.Hash = fmt.Sprintf("%x", newTrophy.Hash)
-								msg.VDFProof = vdfProof.Output
-								msg.VDFInput = vdfProof.Input
-								bc.SaveChain()
-							}
-							p2pNode.BroadcastTrophy(msg)
+							go func() {
+								p2pNode.BroadcastTrophy(msg)
+							}()
 						}
 						_ = reward
 
