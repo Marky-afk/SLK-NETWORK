@@ -136,7 +136,7 @@ func main() {
 	lastPeerCount := 0
 	p2pNode.OnTrophy = func(t p2p.TrophyMsg) {
 		// Ignore our own broadcasts coming back
-		if t.Winner == myWallet.Address && t.Height == bc.Height {
+		if t.Winner == myWallet.Address && t.Height <= bc.Height {
 			return
 		}
 		// STEP 1: Reject if height is not next expected block
