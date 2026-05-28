@@ -953,13 +953,18 @@ func startMining() {
 						fmt.Printf("✅ VDF Proof: %s...\n", proof.Output[:16])
 					}
 
-					newTrophy := bc.AddTrophy(myWallet.Address, distance, elapsed, t)
-
-					// Attach VDF proof to trophy then recompute hash — order matters!
+					// Set VDF proof BEFORE adding to chain so hash includes it
+					var vdfOut, vdfIn string
 					if vdfErr == nil {
-						newTrophy.VDFProof = proof.Output
-						newTrophy.VDFInput = proof.Input
-						newTrophy.Hash = newTrophy.ComputeHash() // recompute AFTER VDFProof set
+						vdfOut = proof.Output
+						vdfIn = proof.Input
+					}
+					newTrophy := bc.AddTrophy(myWallet.Address, distance, elapsed, t)
+					if vdfOut != "" {
+						newTrophy.VDFProof = vdfOut
+						newTrophy.VDFInput = vdfIn
+						newTrophy.Hash = newTrophy.ComputeHash()
+						bc.Trophies[len(bc.Trophies)-1] = newTrophy
 						bc.SaveChain()
 					}
 
