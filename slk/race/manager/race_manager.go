@@ -31,24 +31,37 @@ func IsRaceRunning() bool {
 func launchStress(full bool) {
 	stressMu.Lock()
 	defer stressMu.Unlock()
-	if stressCmd != nil {
+	// nil check — kill previous stress if running
+	if stressCmd != nil && stressCmd.Process != nil {
 		stressCmd.Process.Kill()
 		stressCmd.Wait()
 		stressCmd = nil
 	}
+	// Check stress-ng is installed
+	path, err := exec.LookPath("stress-ng")
+	if err != nil {
+		fmt.Println("⚠️  stress-ng not found — install with: sudo apt install stress-ng")
+		return
+	}
 	var cmd *exec.Cmd
 	if full {
-		cmd = exec.Command("stress-ng",
-			"--cpu", "0",
-			"--cpu-method", "fft",
-			"--vm", "2",
-			"--vm-bytes", "512M",
-			"--cache", "2",
-			"--matrix", "2",
-			"--cpu-load", "100",
+		// MAX power — like Bitcoin mining, hammers every subsystem
+		cmd = exec.Command(path,
+			"--cpu", "0",           // all CPU cores
+			"--cpu-method", "fft",  // most power-hungry method
+			"--cpu-load", "100",    // 100% load
+			"--vm", "4",            // 4 VM stressors
+			"--vm-bytes", "1G",     // 1GB RAM each
+			"--vm-method", "all",   // all RAM stress methods
+			"--cache", "4",         // hammer CPU cache
+			"--matrix", "4",        // matrix math — max heat
+			"--mq", "4",            // message queue stress
+			"--hdd", "2",           // disk I/O stress
+			"--io", "4",            // I/O schedulers
 		)
 	} else {
-		cmd = exec.Command("stress-ng",
+		// Cool down — reduced load
+		cmd = exec.Command(path,
 			"--cpu", "1",
 			"--cpu-load", "15",
 		)
@@ -61,7 +74,7 @@ func launchStress(full bool) {
 func stopStress() {
 	stressMu.Lock()
 	defer stressMu.Unlock()
-	if stressCmd != nil {
+	if stressCmd != nil && stressCmd.Process != nil {
 		stressCmd.Process.Kill()
 		stressCmd.Wait()
 		stressCmd = nil
