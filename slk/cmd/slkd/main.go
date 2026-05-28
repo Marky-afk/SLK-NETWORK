@@ -135,6 +135,10 @@ func main() {
 	// Track last peer count to detect new connections
 	lastPeerCount := 0
 	p2pNode.OnTrophy = func(t p2p.TrophyMsg) {
+		// Ignore our own broadcasts coming back
+		if t.Winner == myWallet.Address && t.Height == bc.Height {
+			return
+		}
 		// STEP 1: Reject if height is not next expected block
 		if t.Height != bc.Height+1 {
 			fmt.Printf("\n⚠️  REJECTED trophy from %s — bad height %d (expected %d)\n",
@@ -940,8 +944,8 @@ func startMining() {
 					fmt.Println("\n🔐 Computing VDF proof (cryptographic race certificate)...")
 					seed := []byte(fmt.Sprintf("%s:%.0f:%.2f:%d", myWallet.Address, distance, elapsed, raceNum))
 					vdfIterations := uint64(distance * 1000)
-					if vdfIterations < 10000 { vdfIterations = 10000 }
-					if vdfIterations > 500000 { vdfIterations = 500000 }
+					if vdfIterations < 1000 { vdfIterations = 1000 }
+					if vdfIterations > 10000 { vdfIterations = 10000 }
 					proof, vdfErr := vdfmath.Prove(seed, vdfIterations)
 					if vdfErr != nil {
 						fmt.Println("⚠️  VDF failed:", vdfErr)
