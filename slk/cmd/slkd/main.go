@@ -300,37 +300,41 @@ p2pNode.Start()
 	}
 	p2pNode.ServeChainSync()
 	go func() {
-		time.Sleep(5 * time.Second)
-		resp, err := p2pNode.SyncWithBestPeer(bc.Height)
-		if err != nil {
-			return
-		}
-		// ── LONGEST CHAIN RULE — same as Bitcoin ──
-		if resp.Height <= bc.Height {
-			return // our chain is longer or equal, ignore
-		}
-		synced := 0
-		for _, t := range resp.Trophies {
-			if t.Height != bc.Height+1 {
+		for {
+			time.Sleep(10 * time.Second)
+			resp, err := p2pNode.SyncWithBestPeer(bc.Height)
+			if err != nil {
 				continue
 			}
-			// Verify VDF proof on every synced trophy
-			if t.VDFProof != "" && t.VDFInput != "" {
-				vdfOk := vdfmath.Verify(&vdfmath.Proof{
-					Input:      t.VDFInput,
-					Output:     t.VDFProof,
-					Iterations: uint64(t.Distance * 1000),
-				})
-				if !vdfOk {
-					fmt.Printf("\n🚨 SYNC rejected trophy #%d — fake VDF proof!\n", t.Height)
-					break
-				}
+			// ── LONGEST CHAIN RULE — same as Bitcoin ──
+			if resp.Height <= bc.Height {
+				continue // our chain is longer or equal, keep checking
 			}
-			tip := bc.Trophies[len(bc.Trophies)-1]
-			newT := trophy.NewTrophy(tip.Hash, t.Winner, t.Distance, t.Time, trophy.Tier(t.Tier), t.Height)
-			bc.Trophies = append(bc.Trophies, newT)
-			bc.Height = t.Height
-			bc.TotalSupply -= newT.Reward
+			synced := 0
+			for _, t := range resp.Trophies {
+				if t.Height <= bc.Height {
+					continue // already have this one
+				}
+				if t.Height != bc.Height+1 {
+					break // gap in chain, stop here
+				}
+				// Verify VDF proof on every synced trophy
+				if t.VDFProof != "" && t.VDFInput != "" {
+					vdfOk := vdfmath.Verify(&vdfmath.Proof{
+						Input:      t.VDFInput,
+						Output:     t.VDFProof,
+						Iterations: uint64(t.Distance * 1000),
+					})
+					if !vdfOk {
+						fmt.Printf("\n🚨 SYNC rejected trophy #%d — fake VDF proof!\n", t.Height)
+						break
+					}
+				}
+				tip := bc.Trophies[len(bc.Trophies)-1]
+				newT := trophy.NewTrophy(tip.Hash, t.Winner, t.Distance, t.Time, trophy.Tier(t.Tier), t.Height)
+				bc.Trophies = append(bc.Trophies, newT)
+				bc.Height = t.Height
+				bc.TotalSupply -= newT.Reward
 
 			// ── UTXO SYNC — create UTXO for every synced trophy winner ──
 			txID := fmt.Sprintf("%x", newT.Hash)[:16] + fmt.Sprintf("%d", t.Height)
@@ -351,15 +355,17 @@ p2pNode.Start()
 					FromTrophy:  t.Height,
 					Spent:       false,
 				})
+				}
+				synced++
 			}
-			synced++
-		}
-		if synced > 0 {
-			// Save UTXO set and sync our own balance
-			bc.UTXOSet.Save()
-			myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
-			myWallet.Save(walletPath)
-			fmt.Printf("\n🔗 SYNCED %d trophies — chain height now %d | balance: %.8f SLK\n", synced, bc.Height, myWallet.Balance)
+			if synced > 0 {
+				// Save UTXO set and sync our own balance
+				bc.SaveChain()
+				bc.UTXOSet.Save()
+				myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
+				myWallet.Save(walletPath)
+				fmt.Printf("\n🔗 SYNCED %d trophies — chain height now %d | reserve: %.8f SLK\n", synced, bc.Height, bc.TotalSupply)
+			}
 		}
 	}()
 
