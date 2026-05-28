@@ -22,6 +22,11 @@ func CreateGenesisTrophy() *trophy.Trophy {
 		trophy.Gold,
 		0,
 	)
+	// Hardcoded genesis timestamp — MUST be identical on ALL nodes
+	// This ensures every node produces the same genesis hash
+	genesis.Header.Timestamp = 1745452800 // 2025-04-24 00:00:00 UTC (GenesisDate)
+	genesis.Timestamp        = 1745452800
+	genesis.Hash             = genesis.ComputeHash()
 	// Genesis reward does NOT reduce supply
 	genesis.Reward = 0
 	return genesis
