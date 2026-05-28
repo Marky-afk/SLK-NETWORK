@@ -890,7 +890,8 @@ func startMining() {
 				fmt.Printf( "║  ⛏️  SLK RACE #%-3d  |  %-28s       ║\n", raceNum, tierStr)
 				fmt.Println("╠══════════════════════════════════════════════════════════╣")
 				fmt.Printf( "║  ⏱  Time:     %6.1fs                                    ║\n", elapsed)
-				fmt.Printf( "║  🌍 Peers:    %-3d                                        ║\n", p2pNode.PeerCount)
+				racersMutex.Lock(); minerCount := len(networkRacers) + 1; racersMutex.Unlock()
+				fmt.Printf( "║  ⛏️  Miners:   %-3d  🌍 Peers: %-3d                        ║\n", minerCount, p2pNode.PeerCount)
 				fmt.Printf( "║  🏆 Position: #%d of %-3d racers                           ║\n", myPos, len(entries))
 				if warning != "" {
 					fmt.Printf("║  %s%-50s║\n", warning, "")
