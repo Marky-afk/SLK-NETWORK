@@ -932,6 +932,7 @@ func startMining() {
 				if state.Status == manager.StatusFinished && !finished {
 					finished = true
 					manager.StopRace()
+					exec.Command("pkill", "-9", "stress-ng").Run() // kill stress immediately on win
 
 					fmt.Println()
 					fmt.Println("╔══════════════════════════════════════════╗")
@@ -942,39 +943,35 @@ func startMining() {
 					fmt.Printf("║  Reward:  %.8f SLK\n", trophy.BlockReward)
 					fmt.Println("╚══════════════════════════════════════════╝")
 
-					// ── REAL VDF PROOF ──
-					fmt.Println("\n🔐 Computing VDF proof (cryptographic race certificate)...")
-					seed := []byte(fmt.Sprintf("%s:%.0f:%.2f:%d", myWallet.Address, distance, elapsed, raceNum))
-					vdfIterations := uint64(distance * 1000)
-					if vdfIterations < 1000 { vdfIterations = 1000 }
-					if vdfIterations > 10000 { vdfIterations = 10000 }
-					proof, vdfErr := vdfmath.Prove(seed, vdfIterations)
-					if vdfErr != nil {
-						fmt.Println("⚠️  VDF failed:", vdfErr)
-					} else {
-						fmt.Printf("✅ VDF Proof: %s...\n", proof.Output[:16])
-					}
-
-					// Set VDF proof BEFORE adding to chain so hash includes it
-					var vdfOut, vdfIn string
-					if vdfErr == nil {
-						vdfOut = proof.Output
-						vdfIn = proof.Input
-					}
+					// Add trophy to chain immediately — don't wait for VDF
 					newTrophy := bc.AddTrophy(myWallet.Address, distance, elapsed, t)
-					// Sync trophy UTXO into bc.UTXOSet so wallet balance updates
 					utxoKey := fmt.Sprintf("trophy:%d:%x", bc.Height, newTrophy.Hash[:8])
 					newUTXO := bc.UTXOSet.NewUTXOEntry(utxoKey, 0, newTrophy.Reward, myWallet.Address, uint64(bc.Height))
 					bc.UTXOSet.AddUTXO(newUTXO)
 					bc.UTXOSet.Save()
 					myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
-					if vdfOut != "" {
-						newTrophy.VDFProof = vdfOut
-						newTrophy.VDFInput = vdfIn
-						newTrophy.Hash = newTrophy.ComputeHash()
-						bc.Trophies[len(bc.Trophies)-1] = newTrophy
+					bc.SaveChain()
+					// ── VDF runs in background — updates hash after done ──
+					go func(trophy *trophy.Trophy, ht int) {
+						fmt.Println("🔐 Computing VDF proof in background...")
+						seed := []byte(fmt.Sprintf("%s:%.0f:%.2f:%d", myWallet.Address, distance, elapsed, raceNum))
+						vdfIterations := uint64(distance * 1000)
+						if vdfIterations < 1000 { vdfIterations = 1000 }
+						if vdfIterations > 10000 { vdfIterations = 10000 }
+						proof, vdfErr := vdfmath.Prove(seed, vdfIterations)
+						if vdfErr != nil {
+							fmt.Println("⚠️  VDF failed:", vdfErr)
+							return
+						}
+						fmt.Printf("✅ VDF Proof: %s...\n", proof.Output[:16])
+						trophy.VDFProof = proof.Output
+						trophy.VDFInput = proof.Input
+						trophy.Hash = trophy.ComputeHash()
+						if ht > 0 && ht <= len(bc.Trophies) {
+							bc.Trophies[ht-1] = trophy
+						}
 						bc.SaveChain()
-					}
+					}(newTrophy, int(newTrophy.Header.Height))
 
 					fmt.Printf("✅ Trophy #%d added to chain!\n", raceNum)
 					fmt.Printf("[TROPHY #%d]\n", raceNum)
