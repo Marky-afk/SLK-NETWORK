@@ -281,12 +281,18 @@ func runMining(startBtn, stopBtn *widget.Button) {
 			if elapsed <= silverT { tier = trophy.Silver; tierStr = "🥈 SILVER" }
 			if elapsed > goldT && elapsed <= silverT { tier = trophy.Silver; tierStr = "🥈 SILVER" }
 
+			racePct := 0.0
+			if distance > 0 { racePct = 1.0 - (st.DistanceLeft / distance) }
+			if racePct < 0 { racePct = 0 }
+			if racePct > 1 { racePct = 1 }
 			setUI(func() {
-				uiTier  = tierStr
-				uiTime  = elapsed
-				uiDist  = st.DistanceLeft
-				uiPower = st.CPUPowerWatts
-				uiTemp  = st.CPUTempCelsius
+				uiTier    = tierStr
+				uiTime    = elapsed
+				uiDist    = st.DistanceLeft
+				uiPower   = st.CPUPowerWatts
+				uiTemp    = st.CPUTempCelsius
+				uiVDFPct  = racePct
+				uiVDFText = fmt.Sprintf("Racing... %.0f%%", racePct*100)
 			})
 
 			if st.DistanceLeft < 0.001 || st.Status == manager.StatusFinished {

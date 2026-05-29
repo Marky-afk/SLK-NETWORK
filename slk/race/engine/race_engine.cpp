@@ -45,32 +45,11 @@ static double read_cpu_usage_percent() {
 }
 
 static double read_cpu_power() {
-    // Try RAPL first (most accurate, needs root)
-    const char* paths[] = {
-        "/sys/class/powercap/intel-rapl:0/energy_uj",
-        "/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj",
-        NULL
-    };
-    for (int i = 0; paths[i] != NULL; i++) {
-        unsigned long long e1 = 0, e2 = 0;
-        FILE *f = fopen(paths[i], "r");
-        if (!f) continue;
-        if(fscanf(f, "%llu", &e1) < 0) {}
-        fclose(f);
-        usleep(50000); // 50ms only — shorter sample window
-        f = fopen(paths[i], "r");
-        if (!f) continue;
-        if(fscanf(f, "%llu", &e2) < 0) {}
-        fclose(f);
-        double watts = (double)(e2 - e1) / 50000.0;
-        if (watts >= 1.0 && watts <= 300.0) return watts;
-    }
-    // Fallback: estimate from CPU usage via /proc/stat (no root needed)
+    // Safe fallback only — no blocking calls, no root needed
     double usage = read_cpu_usage_percent();
-    double tdp   = 35.0;  // HP EliteBook TDP watts
-    double idle  = 5.0;   // idle watts
+    double tdp   = 35.0;
+    double idle  = 5.0;
     double base  = idle + (tdp - idle) * (usage / 100.0);
-    // Add realistic variance (+/- 3W) so power fluctuates naturally
     srand((unsigned int)(time(NULL) ^ (unsigned int)base));
     double noise = ((double)rand() / RAND_MAX) * 6.0 - 3.0;
     double result = base + noise;

@@ -45,22 +45,14 @@ func launchStress(full bool) {
 	}
 	var cmd *exec.Cmd
 	if full {
-		// MAX power — like Bitcoin mining, hammers every subsystem
+		// CPU-only stress — no RAM/disk hammering, safe for laptops
 		cmd = exec.Command(path,
-			"--cpu", "0",           // all CPU cores
-			"--cpu-method", "fft",  // most power-hungry method
-			"--cpu-load", "100",    // 100% load
-			"--vm", "4",            // 4 VM stressors
-			"--vm-bytes", "1G",     // 1GB RAM each
-			"--vm-method", "all",   // all RAM stress methods
-			"--cache", "4",         // hammer CPU cache
-			"--matrix", "4",        // matrix math — max heat
-			"--mq", "4",            // message queue stress
-			"--hdd", "2",           // disk I/O stress
-			"--io", "4",            // I/O schedulers
+			"--cpu", "0",          // all CPU cores
+			"--cpu-method", "fft", // power-hungry but CPU-only
+			"--cpu-load", "85",    // 85% — high but won't kernel panic
 		)
 	} else {
-		// Cool down — reduced load
+		// Cool down — minimal load
 		cmd = exec.Command(path,
 			"--cpu", "1",
 			"--cpu-load", "15",
