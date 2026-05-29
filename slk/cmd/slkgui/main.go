@@ -35,6 +35,9 @@ var (
 
 	raceRunning  int32
 	stopMining   = make(chan struct{}, 1)
+	networkRacers   = map[string]p2p.RacerMsg{}
+	racersMu        sync.Mutex
+	peerWonRace     = make(chan struct{}, 1)
 
 	uiMu        sync.Mutex
 	uiBalance   float64
@@ -241,6 +244,12 @@ func buildUI(w fyne.Window) fyne.CanvasObject {
 	)
 }
 
+func activeRacerCount() int {
+	racersMu.Lock()
+	defer racersMu.Unlock()
+	return 1 + len(networkRacers)
+}
+
 func runMining(startBtn, stopBtn *widget.Button) {
 	atomic.StoreInt32(&raceRunning, 1)
 	raceNum := bc.Height + 1
@@ -253,7 +262,7 @@ func runMining(startBtn, stopBtn *widget.Button) {
 		default:
 		}
 
-		distance := bc.AdjustedDistance(1)
+		distance := bc.AdjustedDistance(activeRacerCount())
 		addLog(fmt.Sprintf("🏁 Race #%d — %.0fm", raceNum, distance))
 		setUI(func() {
 			uiStatus = fmt.Sprintf("🏁 Race #%d — GO!", raceNum)
