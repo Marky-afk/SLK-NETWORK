@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"github.com/slkproject/slk/core/chain"
 	vdfmath "github.com/slkproject/slk/race/math"
 	"github.com/slkproject/slk/core/state"
@@ -36,6 +37,9 @@ var mempool *state.Mempool
 // ONE global scanner and input channel
 var globalScanner *bufio.Scanner
 var inputChan = make(chan string, 10)
+
+// Blocks SIGINT during race win + VDF flow
+var raceWinInProgress int32 // atomic: 0=idle, 1=processing win
 
 // Live racer tracking - updated from network broadcasts
 type NetworkRacer struct {
@@ -388,13 +392,17 @@ p2pNode.Start()
 	go func() {
 		<-sigChan
 		fmt.Println("\n\n🛑 Shutting down node...")
+		// Wait for any in-progress race win/VDF to finish
+		for atomic.LoadInt32(&raceWinInProgress) == 1 {
+			time.Sleep(100 * time.Millisecond)
+		}
 		if manager.IsRaceRunning() {
 			manager.StopRace()
 		}
 		myWallet.Save(walletPath)
 		p2pNode.Stop()
 		time.Sleep(500 * time.Millisecond)
-			os.Exit(0)
+		os.Exit(0)
 	}()
 
 	// Start HTTP API on port 8080
@@ -933,6 +941,7 @@ func startMining() {
 					finished = true
 					manager.StopRace()
 					exec.Command("pkill", "-9", "stress-ng").Run() // kill stress immediately on win
+					atomic.StoreInt32(&raceWinInProgress, 1) // block SIGINT during win+VDF flow
 					fmt.Print("\033[2J\033[H") // clear screen once for trophy display
 
 					fmt.Println()
@@ -962,37 +971,52 @@ func startMining() {
 						vdfCh <- vdfResult{p, e}
 					}()
 
-					// Animated progress bar while VDF runs
+					// Animated progress bar — minimum 1.5s animation so user always sees it
 					barWidth := 40
 					start2 := time.Now()
-					estDur := time.Duration(float64(vdfIterations2)/5000.0*1000) * time.Millisecond
-					if estDur < 200*time.Millisecond { estDur = 200*time.Millisecond }
-					done2 := false
-					for !done2 {
+					minAnim := 1500 * time.Millisecond
+					// Print first frame immediately before goroutine even finishes
+					fmt.Printf("\r  [%s] %3.0f%%  %.2fs ", "░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", 0.0, 0.0)
+					vdfDone := false
+					var vdfRes2 vdfResult
+					for {
+						// Check if VDF finished
 						select {
 						case res := <-vdfCh:
-							done2 = true
-							// re-send real result so we can read below
-							vdfCh <- res
+							vdfDone = true
+							vdfRes2 = res
+							vdfCh <- res // re-send for read below
 						default:
-							pct := time.Since(start2).Seconds() / estDur.Seconds()
-							if pct > 0.99 { pct = 0.99 }
-							filled := int(pct * float64(barWidth))
-							bar := ""
-							for i := 0; i < barWidth; i++ {
-								if i < filled { bar += "█" } else { bar += "░" }
-							}
-							fmt.Printf("\r  [%s] %3.0f%%  %.2fs ", bar, pct*100, time.Since(start2).Seconds())
-							time.Sleep(80 * time.Millisecond)
+						}
+						elapsed2 := time.Since(start2)
+						// Always animate for at least minAnim
+						var pct float64
+						if vdfDone {
+							pct = elapsed2.Seconds() / minAnim.Seconds()
+						} else {
+							pct = elapsed2.Seconds() / minAnim.Seconds()
+						}
+						if pct > 0.99 { pct = 0.99 }
+						filled := int(pct * float64(barWidth))
+						bar := ""
+						for i := 0; i < barWidth; i++ {
+							if i < filled { bar += "█" } else { bar += "░" }
+						}
+						fmt.Printf("\r  [%s] %3.0f%%  %.2fs ", bar, pct*100, elapsed2.Seconds())
+						time.Sleep(60 * time.Millisecond)
+						// Exit only when BOTH vdf is done AND minimum animation time has passed
+						if vdfDone && elapsed2 >= minAnim {
+							_ = vdfRes2
+							break
 						}
 					}
 					// Read actual result
 					vdfRes := <-vdfCh
-					elapsed2 := time.Since(start2).Seconds()
+					totalElapsed := time.Since(start2).Seconds()
 					// Show 100% bar
 					bar100 := ""
 					for i := 0; i < barWidth; i++ { bar100 += "█" }
-					fmt.Printf("\n  [%s] 100%%  %.2fs\n", bar100, elapsed2)
+					fmt.Printf("\n  [%s] 100%%  %.2fs\n", bar100, totalElapsed)
 
 					if vdfRes.err != nil || vdfRes.proof == nil {
 						fmt.Println("⚠️  VDF failed — trophy saved without proof")
@@ -1074,6 +1098,7 @@ func startMining() {
 					fmt.Printf("💰 Total SLK Remaining: %.3f\n", 2000000000.0-float64(bc.Height)*trophy.BlockReward)
 					fmt.Printf("💰 Balance: %.8f SLK | Trophies: %d\n", myWallet.Balance, bc.Height)
 					fmt.Println("⏳ Next race starting in 3 seconds...")
+					atomic.StoreInt32(&raceWinInProgress, 0) // allow SIGINT again
 					time.Sleep(3 * time.Second)
 					// Drain any stale keypresses before next race
 					for len(inputChan) > 0 { <-inputChan }
