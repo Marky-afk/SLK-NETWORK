@@ -67,6 +67,17 @@ func main() {
 	w := a.NewWindow("SLK Mining Node")
 	w.Resize(fyne.NewSize(580, 800))
 
+	// Enforce slkd-first: wallet must exist before slkgui can run
+	if _, err := os.Stat(walletPath); os.IsNotExist(err) {
+		w.SetContent(container.NewCenter(container.NewVBox(
+			widget.NewLabel("❌ No wallet found!"),
+			widget.NewLabel("You must run ./build/slkd first to create your wallet and join the network."),
+			widget.NewLabel("Once slkd is running, restart slkgui."),
+			widget.NewButton("Exit", func() { a.Quit() }),
+		)))
+		w.ShowAndRun()
+		return
+	}
 	myWallet, _ = wallet.LoadOrCreate(walletPath)
 	bc = chain.NewBlockchain()
 	mempool = state.NewMempool()

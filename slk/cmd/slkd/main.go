@@ -408,8 +408,12 @@ p2pNode.Start()
 	// Start HTTP API on port 8080
 	go startAPIServer()
 
-	showMenu()
+	// Node-only daemon — mining is done via slkgui
+	fmt.Println("✅ SLK node running — use slkgui to mine, slkbank for banking")
+	fmt.Println("   Press Ctrl+C to stop")
+	select {} // block forever
 }
+
 
 func startAPIServer() {
 	http.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {

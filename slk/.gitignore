@@ -1,5 +1,7 @@
 # Binary outputs only
 /slkd
+/slkbank
+/slkgui
 *.exe
 *.o
 *.a
@@ -12,7 +14,5 @@ data/
 build/slkd
 build/slkbank
 build/linux/
-slkbank
-slkd
-*.bak
 build/slkgui
+*.bak

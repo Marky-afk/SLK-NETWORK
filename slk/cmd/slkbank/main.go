@@ -535,6 +535,18 @@ func main() {
 	mainWin.CenterOnScreen()
 	mainWin.SetPadded(false)
 
+	// Enforce slkd-first: wallet must exist before slkbank can run
+	if _, err := os.Stat(walletPath); os.IsNotExist(err) {
+		mainWin.SetContent(container.NewCenter(container.NewVBox(
+			widget.NewLabel("❌ No wallet found!"),
+			widget.NewLabel("Please run ./build/slkd first to create your wallet and join the network."),
+			widget.NewLabel("Once slkd is running, restart slkbank."),
+			widget.NewButton("Exit", func() { a.Quit() }),
+		)))
+		mainWin.ShowAndRun()
+		return
+	}
+
 	if !bankAccount.NameLocked {
 		mainWin.SetContent(makeSetupScreen(mainWin))
 	} else {
