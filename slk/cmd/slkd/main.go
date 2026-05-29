@@ -933,6 +933,7 @@ func startMining() {
 					finished = true
 					manager.StopRace()
 					exec.Command("pkill", "-9", "stress-ng").Run() // kill stress immediately on win
+					fmt.Print("\033[2J\033[H") // clear screen once for trophy display
 
 					fmt.Println()
 					fmt.Println("╔══════════════════════════════════════════╗")
@@ -1032,7 +1033,9 @@ func startMining() {
 					for len(inputChan) > 0 { <-inputChan }
 					for len(cmdChan) > 0 { <-cmdChan }
 					raceNum++
+					continue
 				}
+				if finished { continue }
 
 			time.Sleep(500 * time.Millisecond)
 		}
