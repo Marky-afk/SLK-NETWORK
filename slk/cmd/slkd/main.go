@@ -937,7 +937,7 @@ func startMining() {
 					})
 				}
 
-				if state.Status == manager.StatusFinished && !finished {
+				if (state.Status == manager.StatusFinished || state.DistanceLeft <= 0) && !finished {
 					finished = true
 					manager.StopRace()
 					exec.Command("pkill", "-9", "stress-ng").Run() // kill stress immediately on win
