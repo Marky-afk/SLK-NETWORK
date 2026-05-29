@@ -961,6 +961,12 @@ func startMining() {
 						vdfIn = proof.Input
 					}
 					newTrophy := bc.AddTrophy(myWallet.Address, distance, elapsed, t)
+					// Sync trophy UTXO into bc.UTXOSet so wallet balance updates
+					utxoKey := fmt.Sprintf("trophy:%d:%x", bc.Height, newTrophy.Hash[:8])
+					newUTXO := bc.UTXOSet.NewUTXOEntry(utxoKey, 0, newTrophy.Reward, myWallet.Address, uint64(bc.Height))
+					bc.UTXOSet.AddUTXO(newUTXO)
+					bc.UTXOSet.Save()
+					myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
 					if vdfOut != "" {
 						newTrophy.VDFProof = vdfOut
 						newTrophy.VDFInput = vdfIn

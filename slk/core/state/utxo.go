@@ -138,6 +138,11 @@ func (u *UTXOSet) PrintUTXOs(address string) {
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 }
 
+// NewUTXOEntry creates a UTXO struct without needing the state package name
+func (u *UTXOSet) NewUTXOEntry(txID string, index int, amount float64, address string, fromTrophy uint64) *UTXO {
+	return &UTXO{TxID: txID, OutputIndex: index, Amount: amount, Address: address, FromTrophy: fromTrophy, Spent: false}
+}
+
 // Save persists UTXO set to disk
 func (u *UTXOSet) Save() error {
 	os.MkdirAll(os.Getenv("HOME")+"/.slk", 0700)

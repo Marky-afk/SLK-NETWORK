@@ -9716,6 +9716,17 @@ func makeMiningTab(w fyne.Window) fyne.CanvasObject {
 						seed := []byte(fmt.Sprintf("%s:%.0f:%.2f:%d", addr, distance, finishTime, raceNum))
 						vdfProof, vdfErr := vdfmath.Prove(seed, vdfIterations)
 						newTrophy := bc.AddTrophy(addr, distance, finishTime, tier)
+						// Sync trophy UTXO into standalone utxoSet so wallet balance updates
+						utxoKey := fmt.Sprintf("trophy:%d:%x", bc.Height, newTrophy.Hash[:8])
+						utxoSet.AddUTXO(&state.UTXO{
+							TxID:        utxoKey,
+							OutputIndex: 0,
+							Amount:      newTrophy.Reward,
+							Address:     addr,
+							FromTrophy:  uint64(bc.Height),
+							Spent:       false,
+						})
+						utxoSet.Save()
 						if vdfErr == nil {
 							newTrophy.VDFProof = vdfProof.Output
 							newTrophy.VDFInput = vdfProof.Input
