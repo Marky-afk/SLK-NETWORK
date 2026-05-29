@@ -681,7 +681,8 @@ func monitorPeers(lastCount *int) {
 	for range ticker.C {
 		current := p2pNode.PeerCount
 		diff := current - *lastCount
-		if diff >= 1 && diff <= 3 {
+		// Only print peer notifications when NOT racing — avoids corrupting race display
+		if diff >= 1 && diff <= 3 && !myRacerActive {
 			fmt.Printf("\n🟢 %d new racer(s) joined the SLK network! Total peers: %d\n",
 				diff, current)
 			fmt.Print("\nChoose option: ")
@@ -937,7 +938,7 @@ func startMining() {
 					})
 				}
 
-				if (state.Status == manager.StatusFinished || state.DistanceLeft <= 0) && !finished {
+				if (state.Status == manager.StatusFinished || state.DistanceLeft < 0.001) && !finished {
 					finished = true
 					manager.StopRace()
 					exec.Command("pkill", "-9", "stress-ng").Run() // kill stress immediately on win
