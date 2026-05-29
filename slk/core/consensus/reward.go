@@ -3,28 +3,17 @@ package consensus
 import "github.com/slkproject/slk/core/trophy"
 
 const (
-	BaseReward  = 0.00800000
-	SilverCut   = 0.30
-	BronzeCut   = 0.60
+	BaseReward = 0.00800000
 )
 
-// CalculateReward returns the actual SLK reward after tier cut
+// CalculateReward always returns full 0.008 SLK regardless of tier
 func CalculateReward(tier trophy.Tier) float64 {
-	switch tier {
-	case trophy.Gold:
-		return BaseReward
-	case trophy.Silver:
-		return BaseReward * (1.0 - SilverCut)
-	case trophy.Bronze:
-		return BaseReward * (1.0 - BronzeCut)
-	default:
-		return BaseReward
-	}
+	return BaseReward
 }
 
-// CalculateBurn returns how much SLK is burned (not given to winner)
+// CalculateBurn returns 0 — no burn, full reward always paid
 func CalculateBurn(tier trophy.Tier) float64 {
-	return BaseReward - CalculateReward(tier)
+	return 0
 }
 
 // DetermineTier returns the tier based on finish time vs target
