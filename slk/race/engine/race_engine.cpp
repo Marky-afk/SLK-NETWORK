@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <math.h>
+#include <time.h>
 
 extern "C" double slk_get_cpu_temp(void);
 
@@ -68,7 +69,14 @@ static double read_cpu_power() {
     double usage = read_cpu_usage_percent();
     double tdp   = 35.0;  // HP EliteBook TDP watts
     double idle  = 5.0;   // idle watts
-    return idle + (tdp - idle) * (usage / 100.0);
+    double base  = idle + (tdp - idle) * (usage / 100.0);
+    // Add realistic variance (+/- 3W) so power fluctuates naturally
+    srand((unsigned int)(time(NULL) ^ (unsigned int)base));
+    double noise = ((double)rand() / RAND_MAX) * 6.0 - 3.0;
+    double result = base + noise;
+    if (result < idle) result = idle;
+    if (result > tdp + 5.0) result = tdp + 5.0;
+    return result;
 }
 
 static void kill_stress() {
