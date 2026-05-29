@@ -9,3 +9,9 @@
 backups/
 data/
 *.json
+build/slkd
+build/slkbank
+build/linux/
+slkbank
+slkd
+*.bak
