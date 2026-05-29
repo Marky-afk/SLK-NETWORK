@@ -944,35 +944,81 @@ func startMining() {
 					fmt.Printf("║  Reward:  %.8f SLK\n", trophy.BlockReward)
 					fmt.Println("╚══════════════════════════════════════════╝")
 
-					// Add trophy to chain immediately — don't wait for VDF
+					// ── VDF PROGRESS BAR (runs in foreground so user sees proof) ──
+					vdfIterations2 := uint64(distance * 1000)
+					if vdfIterations2 < 1000  { vdfIterations2 = 1000 }
+					if vdfIterations2 > 10000 { vdfIterations2 = 10000 }
+					seed2 := []byte(fmt.Sprintf("%s:%.0f:%.2f:%d", myWallet.Address, distance, elapsed, raceNum))
+
+					fmt.Println()
+					fmt.Println("🔐 Computing VDF proof (cryptographic race certificate)...")
+					fmt.Printf("   Iterations: %d\n", vdfIterations2)
+
+					// Run VDF in goroutine, show progress bar while waiting
+					type vdfResult struct { proof *vdfmath.Proof; err error }
+					vdfCh := make(chan vdfResult, 1)
+					go func() {
+						p, e := vdfmath.Prove(seed2, vdfIterations2)
+						vdfCh <- vdfResult{p, e}
+					}()
+
+					// Animated progress bar while VDF runs
+					barWidth := 40
+					start2 := time.Now()
+					estDur := time.Duration(float64(vdfIterations2)/5000.0*1000) * time.Millisecond
+					if estDur < 200*time.Millisecond { estDur = 200*time.Millisecond }
+					done2 := false
+					for !done2 {
+						select {
+						case res := <-vdfCh:
+							done2 = true
+							// re-send real result so we can read below
+							vdfCh <- res
+						default:
+							pct := time.Since(start2).Seconds() / estDur.Seconds()
+							if pct > 0.99 { pct = 0.99 }
+							filled := int(pct * float64(barWidth))
+							bar := ""
+							for i := 0; i < barWidth; i++ {
+								if i < filled { bar += "█" } else { bar += "░" }
+							}
+							fmt.Printf("\r  [%s] %3.0f%%  %.2fs ", bar, pct*100, time.Since(start2).Seconds())
+							time.Sleep(80 * time.Millisecond)
+						}
+					}
+					// Read actual result
+					vdfRes := <-vdfCh
+					elapsed2 := time.Since(start2).Seconds()
+					// Show 100% bar
+					bar100 := ""
+					for i := 0; i < barWidth; i++ { bar100 += "█" }
+					fmt.Printf("\n  [%s] 100%%  %.2fs\n", bar100, elapsed2)
+
+					if vdfRes.err != nil || vdfRes.proof == nil {
+						fmt.Println("⚠️  VDF failed — trophy saved without proof")
+					} else {
+						fmt.Printf("✅ VDF Proof: %s...\n", vdfRes.proof.Output[:16])
+					}
+
+					// Add trophy to chain with VDF proof already set
 					newTrophy := bc.AddTrophy(myWallet.Address, distance, elapsed, t)
+					if vdfRes.proof != nil {
+						newTrophy.VDFProof = vdfRes.proof.Output
+						newTrophy.VDFInput  = vdfRes.proof.Input
+						newTrophy.Hash      = newTrophy.ComputeHash()
+						if newTrophy.Header.Height > 0 && int(newTrophy.Header.Height) <= len(bc.Trophies) {
+							bc.Trophies[newTrophy.Header.Height-1] = newTrophy
+						}
+					}
+					// dummy trophy var for rest of code
+					_ = newTrophy
 					utxoKey := fmt.Sprintf("trophy:%d:%x", bc.Height, newTrophy.Hash[:8])
 					newUTXO := bc.UTXOSet.NewUTXOEntry(utxoKey, 0, newTrophy.Reward, myWallet.Address, uint64(bc.Height))
 					bc.UTXOSet.AddUTXO(newUTXO)
 					bc.UTXOSet.Save()
 					myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
 					bc.SaveChain()
-					// ── VDF runs in background — updates hash after done ──
-					go func(trophy *trophy.Trophy, ht int) {
-						fmt.Println("🔐 Computing VDF proof in background...")
-						seed := []byte(fmt.Sprintf("%s:%.0f:%.2f:%d", myWallet.Address, distance, elapsed, raceNum))
-						vdfIterations := uint64(distance * 1000)
-						if vdfIterations < 1000 { vdfIterations = 1000 }
-						if vdfIterations > 10000 { vdfIterations = 10000 }
-						proof, vdfErr := vdfmath.Prove(seed, vdfIterations)
-						if vdfErr != nil {
-							fmt.Println("⚠️  VDF failed:", vdfErr)
-							return
-						}
-						fmt.Printf("✅ VDF Proof: %s...\n", proof.Output[:16])
-						trophy.VDFProof = proof.Output
-						trophy.VDFInput = proof.Input
-						trophy.Hash = trophy.ComputeHash()
-						if ht > 0 && ht <= len(bc.Trophies) {
-							bc.Trophies[ht-1] = trophy
-						}
-						bc.SaveChain()
-					}(newTrophy, int(newTrophy.Header.Height))
+
 
 					fmt.Printf("✅ Trophy #%d added to chain!\n", raceNum)
 					fmt.Printf("[TROPHY #%d]\n", raceNum)
