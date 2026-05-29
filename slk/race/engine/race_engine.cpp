@@ -57,12 +57,12 @@ static double read_cpu_power() {
         if (!f) continue;
         if(fscanf(f, "%llu", &e1) < 0) {}
         fclose(f);
-        usleep(200000);
+        usleep(50000); // 50ms only — shorter sample window
         f = fopen(paths[i], "r");
         if (!f) continue;
         if(fscanf(f, "%llu", &e2) < 0) {}
         fclose(f);
-        double watts = (double)(e2 - e1) / 200000.0;
+        double watts = (double)(e2 - e1) / 50000.0;
         if (watts >= 1.0 && watts <= 300.0) return watts;
     }
     // Fallback: estimate from CPU usage via /proc/stat (no root needed)
@@ -185,7 +185,7 @@ static void* telemetry_loop(void* arg) {
             }
         }
         pthread_mutex_unlock(&g_mutex);
-        usleep(1000000); // 1 second ticks
+        usleep(200000); // 200ms ticks — faster win detection
     }
     return NULL;
 }
