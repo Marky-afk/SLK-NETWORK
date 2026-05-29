@@ -16,3 +16,33 @@ build/slkbank
 build/linux/
 build/slkgui
 *.bak
+
+# Wallets & Private Keys - NEVER commit
+*.wallet
+*.key
+*.pem
+wallet.dat
+keystore/
+*_wallet*
+*_key*
+
+# Peer/Node Identity
+peer_id
+node_key
+peer_store/
+
+# Chain & UTXO state
+*.db
+chain/
+utxo/
+trophies/
+
+# Environment & secrets
+.env
+*.env
+config.local.*
+secrets.*
+
+# OS junk
+.DS_Store
+Thumbs.db

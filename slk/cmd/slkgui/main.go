@@ -51,7 +51,15 @@ var (
 	uiStatus    string
 	uiVDFPct    float64
 	uiVDFText   string
-	uiLogLines  []string
+	uiLogLines   []string
+	uiDifficulty float64
+	uiRacers       []string
+	uiPeerList     []string
+	uiHashRate      string
+	uiAccepted      int
+	uiRejected      int
+	uiMiningTime    float64
+	uiSessionEarned float64
 )
 
 func setUI(fn func()) { uiMu.Lock(); fn(); uiMu.Unlock() }
@@ -86,25 +94,61 @@ func main() {
 	mempool = state.NewMempool()
 	myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
 
+	initDist := bc.AdjustedDistance(1)
 	setUI(func() {
-		uiBalance  = myWallet.Balance
-		uiTrophies = int(bc.Height)
-		uiStatus   = "Press START MINING to begin"
-		uiVDFText  = "idle"
-		uiTier     = "—"
+		uiBalance    = myWallet.Balance
+		uiTrophies   = int(bc.Height)
+		uiStatus     = "Press START MINING to begin"
+		uiVDFText    = "idle"
+		uiTier       = "—"
+		uiDifficulty = initDist
 	})
 
-	// Start P2P
+	// Start P2P — use separate dir so node_key doesn't conflict with slkbank
 	go func() {
 		var err error
-		p2pNode, err = p2p.NewNode(30303, os.Getenv("HOME")+"/.slk")
+		guiDir := os.Getenv("HOME") + "/.slk/gui"
+		os.MkdirAll(guiDir, 0755)
+		p2pNode, err = p2p.NewNode(30303, guiDir)
 		if err != nil { addLog("❌ P2P: " + err.Error()); return }
 		p2pNode.Start()
-		addLog(fmt.Sprintf("🌐 P2P ready — %d peers", p2pNode.PeerCount))
+		// Wait for bootstrap connections to establish
+		for i := 0; i < 12; i++ {
+			time.Sleep(3 * time.Second)
+			peerList := p2pNode.GetPeers()
+			setUI(func() {
+				uiPeers    = p2pNode.PeerCount
+				uiPeerList = peerList
+			})
+			if p2pNode.PeerCount > 0 {
+				addLog(fmt.Sprintf("🌐 P2P ready — %d peers", p2pNode.PeerCount))
+				break
+			}
+		}
+		if p2pNode.PeerCount == 0 {
+			addLog("⚠️ No peers yet — still discovering...")
+		}
 		p2pNode.OnTrophy = func(t p2p.TrophyMsg) {
 			if t.Winner != myWallet.Address {
 				addLog(fmt.Sprintf("📡 Trophy #%d from %s", t.Height, t.Winner[:12]))
 			}
+		}
+		p2pNode.OnRacer = func(r p2p.RacerMsg) {
+			racersMu.Lock()
+			if r.Status == "STOPPED" || r.Status == "FINISHED" {
+				delete(networkRacers, r.Address)
+			} else {
+				networkRacers[r.Address] = r
+			}
+			list := make([]string, 0, len(networkRacers))
+			for _, v := range networkRacers {
+				name := v.Address
+				if len(name) > 16 { name = name[:16] + "..." }
+				if v.Username != "" { name = v.Username }
+				list = append(list, fmt.Sprintf("🏃 %s  dist:%.2fm  ⚡%.0fW  %s", name, v.DistanceLeft, v.Power, v.Status))
+			}
+			racersMu.Unlock()
+			setUI(func() { uiRacers = list })
 		}
 	}()
 
@@ -121,39 +165,73 @@ func buildUI(w fyne.Window) fyne.CanvasObject {
 	title.TextStyle = fyne.TextStyle{Bold: true}
 	title.Alignment = fyne.TextAlignCenter
 
-	balLbl   := widget.NewLabel("")
-	trophLbl  := widget.NewLabel("")
-	addrLbl   := widget.NewLabel("📬 " + myWallet.Address)
-	addrLbl.Wrapping = fyne.TextWrapWord
+	// ── Wallet / Stats bar ──
+	balLbl  := widget.NewLabel("")
+	balLbl.TextStyle = fyne.TextStyle{Bold: true}
+	trophLbl := widget.NewLabel("")
+	trophLbl.TextStyle = fyne.TextStyle{Bold: true}
+	addrLbl  := widget.NewLabel("📬 " + myWallet.Address)
+	addrLbl.Wrapping  = fyne.TextWrapWord
 	addrLbl.Alignment = fyne.TextAlignCenter
-	peersLbl  := widget.NewLabel("")
+	peersLbl := widget.NewLabel("")
+	peersLbl.TextStyle = fyne.TextStyle{Bold: true}
 
+	// ── Mining stats (Bitcoin-style) ──
+	hashRateLbl     := widget.NewLabel("")
+	hashRateLbl.TextStyle = fyne.TextStyle{Bold: true}
+	acceptedLbl     := widget.NewLabel("")
+	acceptedLbl.TextStyle = fyne.TextStyle{Bold: true}
+	rejectedLbl     := widget.NewLabel("")
+	sessionEarnLbl  := widget.NewLabel("")
+	sessionEarnLbl.TextStyle = fyne.TextStyle{Bold: true}
+	miningTimeLbl   := widget.NewLabel("")
+
+	// ── Race panel ──
 	raceHdr := canvas.NewText("── LIVE RACE ──", yellow)
-	raceHdr.TextSize = 13
+	raceHdr.TextSize  = 13
 	raceHdr.TextStyle = fyne.TextStyle{Bold: true}
 	raceHdr.Alignment = fyne.TextAlignCenter
 
 	tierLbl   := widget.NewLabel("")
+	tierLbl.TextStyle = fyne.TextStyle{Bold: true}
 	timeLbl   := widget.NewLabel("")
 	distLbl   := widget.NewLabel("")
 	powerLbl  := widget.NewLabel("")
 	tempLbl   := widget.NewLabel("")
+	diffLbl   := widget.NewLabel("")
 	statusLbl := widget.NewLabel("")
-	statusLbl.Wrapping = fyne.TextWrapWord
+	statusLbl.Wrapping  = fyne.TextWrapWord
 	statusLbl.Alignment = fyne.TextAlignCenter
+	statusLbl.TextStyle = fyne.TextStyle{Bold: true}
 
-	vdfLbl  := widget.NewLabel("")
-	vdfBar  := widget.NewProgressBar()
+	vdfLbl := widget.NewLabel("")
+	vdfBar := widget.NewProgressBar()
 	vdfBar.Min, vdfBar.Max = 0, 1
+
+	// ── Competitors / Peers ──
+	racersHdr := canvas.NewText("── LIVE COMPETITORS ──", yellow)
+	racersHdr.TextSize  = 12
+	racersHdr.TextStyle = fyne.TextStyle{Bold: true}
+	racersHdr.Alignment = fyne.TextAlignCenter
+	racersLbl := widget.NewLabel("")
+	racersLbl.Wrapping = fyne.TextWrapWord
+
+	peersHdr := canvas.NewText("── CONNECTED PEERS ──", yellow)
+	peersHdr.TextSize  = 12
+	peersHdr.TextStyle = fyne.TextStyle{Bold: true}
+	peersHdr.Alignment = fyne.TextAlignCenter
+	peersListLbl := widget.NewLabel("")
+	peersListLbl.Wrapping = fyne.TextWrapWord
 
 	logLbl := widget.NewLabel("")
 	logLbl.Wrapping = fyne.TextWrapWord
 	logScroll := container.NewScroll(logLbl)
-	logScroll.SetMinSize(fyne.NewSize(540, 180))
+	logScroll.SetMinSize(fyne.NewSize(540, 150))
 
-	startBtn := widget.NewButton("🏁  START MINING", nil)
+	// ── START / STOP buttons (large, prominent) ──
+	startBtn := widget.NewButton("⛏️  START MINING", nil)
 	startBtn.Importance = widget.HighImportance
-	stopBtn  := widget.NewButton("⏹  STOP", nil)
+	stopBtn  := widget.NewButton("🛑  STOP MINING", nil)
 	stopBtn.Importance = widget.DangerImportance
 	stopBtn.Disable()
 
@@ -197,49 +275,118 @@ func buildUI(w fyne.Window) fyne.CanvasObject {
 			for _, l := range lines { log += l + "\n" }
 
 			fyne.Do(func() {
-				balLbl.SetText(fmt.Sprintf("💰  %.8f SLK", bal))
+				balLbl.SetText(fmt.Sprintf("💰  Balance: %.8f SLK", bal))
 				trophLbl.SetText(fmt.Sprintf("🏆  Trophies: %d", troph))
 				peersLbl.SetText(fmt.Sprintf("🌍  Peers: %d", peers))
-				tierLbl.SetText("Tier: " + tier)
-				timeLbl.SetText(fmt.Sprintf("⏱  Time: %.1fs", t))
-				distLbl.SetText(fmt.Sprintf("📍  Distance Left: %.3fm", dist))
-				powerLbl.SetText(fmt.Sprintf("⚡  Power: %.1fW", pwr))
-				tempLbl.SetText(fmt.Sprintf("🌡  Temp: %.0f°C", tmp))
+				hashRateLbl.SetText("⚡ Hash Rate:   " + func() string { if uiHashRate == "" { return "0.00 H/s" }; return uiHashRate }())
+				acceptedLbl.SetText(fmt.Sprintf("✅ Accepted:   %d", uiAccepted))
+				rejectedLbl.SetText(fmt.Sprintf("❌ Rejected:   %d", uiRejected))
+				sessionEarnLbl.SetText(fmt.Sprintf("💎 Session Earned: +%.8f SLK", uiSessionEarned))
+				miningTimeLbl.SetText(fmt.Sprintf("⏳ Mining Time: %.0fs", uiMiningTime))
+				diffLbl.SetText(fmt.Sprintf("🎯 Difficulty: %.1fm", uiDifficulty))
+				tierLbl.SetText("🏅 Tier:  " + tier)
+				timeLbl.SetText(fmt.Sprintf("⏱  Race Time: %.1fs", t))
+				distLbl.SetText(fmt.Sprintf("📍 Distance Left: %.3fm", dist))
+				powerLbl.SetText(fmt.Sprintf("⚡ CPU Power: %.1fW", pwr))
+				tempLbl.SetText(fmt.Sprintf("🌡  CPU Temp: %.0f°C", tmp))
 				statusLbl.SetText(status)
 				vdfBar.SetValue(vdfPct)
-				vdfLbl.SetText("🔐 VDF: " + vdfTxt)
+				vdfLbl.SetText("🔐 VDF Proof: " + vdfTxt)
 				logLbl.SetText(log)
+				peerTxt := ""; for _, p := range uiPeerList { peerTxt += "🔗 " + p + "\n" }
+				racerTxt := ""; for _, r := range uiRacers { racerTxt += r + "\n" }
+				if peerTxt != "" { peersListLbl.SetText(peerTxt) }
+				if racerTxt != "" { racersLbl.SetText(racerTxt) }
 			})
 		}
 	}()
 
 	// peer count ticker
 	go func() {
-		for range time.Tick(5 * time.Second) {
+		for range time.Tick(3 * time.Second) {
 			if p2pNode != nil {
-				setUI(func() { uiPeers = p2pNode.PeerCount })
+				peerList := p2pNode.GetPeers()
+				setUI(func() {
+					uiPeers    = p2pNode.PeerCount
+					uiPeerList = peerList
+				})
 			}
+			dist := bc.AdjustedDistance(activeRacerCount())
 			myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
-			setUI(func() { uiBalance = myWallet.Balance; uiTrophies = int(bc.Height) })
+			setUI(func() {
+				uiBalance    = myWallet.Balance
+				uiTrophies   = int(bc.Height)
+				uiDifficulty = dist
+			})
 		}
 	}()
+
+	racersScroll := container.NewScroll(racersLbl)
+	racersScroll.SetMinSize(fyne.NewSize(540, 70))
+	peersScroll := container.NewScroll(peersListLbl)
+	peersScroll.SetMinSize(fyne.NewSize(540, 70))
+
+	// ── Bitcoin-style mining stats box ──
+	miningStatsHdr := canvas.NewText("── MINING STATS ──", yellow)
+	miningStatsHdr.TextSize  = 13
+	miningStatsHdr.TextStyle = fyne.TextStyle{Bold: true}
+	miningStatsHdr.Alignment = fyne.TextAlignCenter
+
+	statsLeft  := container.NewVBox(hashRateLbl, acceptedLbl, rejectedLbl)
+	statsRight := container.NewVBox(sessionEarnLbl, miningTimeLbl, diffLbl)
+	statsGrid  := container.NewGridWithColumns(2, statsLeft, statsRight)
+
+	// ── Wallet info box ──
+	walletHdr := canvas.NewText("── WALLET ──", yellow)
+	walletHdr.TextSize  = 13
+	walletHdr.TextStyle = fyne.TextStyle{Bold: true}
+	walletHdr.Alignment = fyne.TextAlignCenter
 
 	return container.NewVBox(
 		container.NewCenter(title),
 		widget.NewSeparator(),
+
+		// Wallet block
 		container.NewPadded(container.NewVBox(
-			balLbl, trophLbl, addrLbl, peersLbl,
+			walletHdr,
+			container.NewCenter(addrLbl),
+			container.NewGridWithColumns(3, balLbl, trophLbl, peersLbl),
 		)),
 		widget.NewSeparator(),
+
+		// START / STOP buttons — big and prominent
+		container.NewPadded(container.NewGridWithColumns(2, startBtn, stopBtn)),
+		container.NewCenter(statusLbl),
+		widget.NewSeparator(),
+
+		// Mining stats (Bitcoin-style)
 		container.NewPadded(container.NewVBox(
-			raceHdr, tierLbl, timeLbl, distLbl, powerLbl, tempLbl,
+			miningStatsHdr,
+			statsGrid,
+		)),
+		widget.NewSeparator(),
+
+		// Live race panel
+		container.NewPadded(container.NewVBox(
+			raceHdr,
+			container.NewGridWithColumns(2,
+				container.NewVBox(tierLbl, timeLbl, distLbl),
+				container.NewVBox(powerLbl, tempLbl),
+			),
 			widget.NewSeparator(),
 			vdfLbl, vdfBar,
 		)),
 		widget.NewSeparator(),
-		container.NewPadded(statusLbl),
-		container.NewPadded(container.NewGridWithColumns(2, startBtn, stopBtn)),
+
+		// Competitors
+		container.NewPadded(container.NewVBox(racersHdr, racersScroll)),
 		widget.NewSeparator(),
+
+		// Peers
+		container.NewPadded(container.NewVBox(peersHdr, peersScroll)),
+		widget.NewSeparator(),
+
+		// Activity log
 		container.NewPadded(logScroll),
 	)
 }
@@ -252,7 +399,16 @@ func activeRacerCount() int {
 
 func runMining(startBtn, stopBtn *widget.Button) {
 	atomic.StoreInt32(&raceRunning, 1)
-	raceNum := bc.Height + 1
+	raceNum     := bc.Height + 1
+	sessionStart := time.Now()
+	setUI(func() {
+		uiAccepted      = 0
+		uiRejected      = 0
+		uiSessionEarned = 0
+		uiMiningTime    = 0
+		uiHashRate      = "calculating..."
+		uiStatus        = "⛏️  Mining started..."
+	})
 
 	for {
 		select {
@@ -314,6 +470,22 @@ func runMining(startBtn, stopBtn *widget.Button) {
 				uiVDFPct  = racePct
 				uiVDFText = fmt.Sprintf("Racing... %.0f%%", racePct*100)
 			})
+			// Update session mining time and hashrate
+			sessionElapsed := time.Since(sessionStart).Seconds()
+			hashRate := ""
+			if elapsed > 0 {
+				hr := distance / elapsed
+				if hr >= 1000 { hashRate = fmt.Sprintf("%.2f KH/s", hr/1000) } else { hashRate = fmt.Sprintf("%.2f H/s", hr) }
+			}
+			setUI(func() { uiMiningTime = sessionElapsed; uiHashRate = hashRate })
+
+			if p2pNode != nil {
+				go p2pNode.BroadcastRacerPosition(p2p.RacerMsg{
+					Address: myWallet.Address, DistanceLeft: st.DistanceLeft,
+					Power: st.CPUPowerWatts, Temp: st.CPUTempCelsius,
+					Status: "RACING", Username: "",
+				})
+			}
 
 			if st.DistanceLeft < 0.001 || st.Status == manager.StatusFinished {
 				finished = true
@@ -375,11 +547,14 @@ func runMining(startBtn, stopBtn *widget.Button) {
 				bc.SaveChain()
 
 				setUI(func() {
-					uiBalance  = myWallet.Balance
-					uiTrophies = int(bc.Height)
-					uiStatus   = fmt.Sprintf("✅ Trophy #%d! +%.8f SLK — next in 3s...", raceNum, newT.Reward)
+					uiBalance        = myWallet.Balance
+					uiTrophies       = int(bc.Height)
+					uiAccepted++
+					uiSessionEarned += newT.Reward
+					uiMiningTime     = time.Since(sessionStart).Seconds()
+					uiStatus         = fmt.Sprintf("✅ Trophy #%d! +%.8f SLK — next in 3s...", raceNum, newT.Reward)
 				})
-				addLog(fmt.Sprintf("💰 Balance: %.8f SLK | Trophies: %d", myWallet.Balance, bc.Height))
+				addLog(fmt.Sprintf("💰 Balance: %.8f SLK | Trophies: %d | Session: +%.8f SLK", myWallet.Balance, bc.Height, newT.Reward))
 
 				if p2pNode != nil {
 					go p2pNode.BroadcastTrophy(p2p.TrophyMsg{

@@ -473,7 +473,7 @@ func main() {
 		for {
 			time.Sleep(10 * time.Second)
 			fresh := chain.NewBlockchain()
-			if fresh != nil && fresh.Height > bc.Height {
+			if fresh != nil && fresh.Height >= bc.Height {
 				bc = fresh
 				bc.ReconcileUTXOs()
 				utxoSet = bc.UTXOSet
@@ -2042,17 +2042,32 @@ func makeDashboardTab(w fyne.Window) fyne.CanvasObject {
 
 	// Real wallet balance from UTXO
 	myAddr := ""
-	if mainWallet != nil { myAddr = mainWallet.Address }
+	if mainWallet != nil {
+		myAddr = mainWallet.Address
+	} else {
+		if data, err := os.ReadFile(os.Getenv("HOME") + "/.slk/wallet.json"); err == nil {
+			var wj map[string]interface{}
+			if json.Unmarshal(data, &wj) == nil {
+				if a, ok := wj["address"].(string); ok && a != "" { myAddr = a }
+				if myAddr == "" {
+					if a, ok := wj["Address"].(string); ok { myAddr = a }
+				}
+			}
+		}
+	}
 	curBal := 0.0
 	if utxoSet != nil { curBal = utxoSet.GetTotalBalance(myAddr) }
-	REWARD_SAT    := int64(800000)
+	var myTrophyCount uint64
+	if bc != nil {
+		for _, t := range bc.Trophies {
+			if t.Winner == myAddr { myTrophyCount++ }
+		}
+	}
 	SUPPLY_SAT    := int64(200000000000000000)
-	minedSat      := int64(bcHeight) * REWARD_SAT
+	minedSat      := int64(curBal * 1e8)
 	remainingSat  := SUPPLY_SAT - minedSat
 	remainWhole   := remainingSat / int64(100000000)
 	remainFrac    := remainingSat % int64(100000000)
-	minedWhole    := minedSat / int64(100000000)
-	minedFrac     := minedSat % int64(100000000)
 	dist          := chain.CalculateDistance(peers, bcHeight)
 	diffLabel     := chain.DifficultyLabel(peers, bcHeight)
 	gold, _, _    := chain.CalculateTargetTime(dist)
@@ -2076,13 +2091,17 @@ func makeDashboardTab(w fyne.Window) fyne.CanvasObject {
 		val.Wrapping = fyne.TextWrapWord
 		return container.NewPadded(container.NewVBox(t, val, widget.NewSeparator()))
 	}
+	minedWhole := int64(curBal)
+	minedFrac  := int64((curBal - float64(minedWhole)) * 1e8)
 	totalMinedLbl := widget.NewLabel(fmt.Sprintf("%d.%08d SLK", minedWhole, minedFrac))
 	totalMinedLbl.TextStyle = fyne.TextStyle{Bold: true}
+	trophyValLabel := widget.NewLabel(fmt.Sprintf("#%d", myTrophyCount))
+	trophyValLabel.TextStyle = fyne.TextStyle{Bold: true}
 	reserveLbl    := widget.NewLabel(fmt.Sprintf("%d.%08d SLK", remainWhole, remainFrac))
 	reserveLbl.TextStyle = fyne.TextStyle{Bold: true}
 
 	netGrid := container.New(layout.NewGridLayout(4),
-		mkStat("🏆 My Trophies", heightValLabel),
+		mkStat("🏆 My Trophies", trophyValLabel),
 		mkStat("💰 My Wallet", supplyLabel),
 		mkStat("🌍 Peers", peersValLabel),
 		mkStat("🥇 Gold Target", goldLabel),
@@ -2107,7 +2126,24 @@ func makeDashboardTab(w fyne.Window) fyne.CanvasObject {
 			g2, _, _ := chain.CalculateTargetTime(d)
 			// Count MY trophies and sync real balance
 			myAddr2 := ""
-			if mainWallet != nil { myAddr2 = mainWallet.Address }
+			if mainWallet != nil {
+				myAddr2 = mainWallet.Address
+			} else {
+				if data, err := os.ReadFile(os.Getenv("HOME") + "/.slk/wallet.json"); err == nil {
+					var wj map[string]interface{}
+					if json.Unmarshal(data, &wj) == nil {
+						if a, ok := wj["address"].(string); ok && a != "" { myAddr2 = a }
+						if myAddr2 == "" {
+							if a, ok := wj["Address"].(string); ok { myAddr2 = a }
+						}
+					}
+				}
+			}
+			// Always reload chain and utxo from disk so we see slkgui mines
+			freshBc := chain.NewBlockchain()
+			if freshBc != nil { bc = freshBc }
+			freshUtxo := state.LoadUTXOSet()
+			if freshUtxo != nil { utxoSet = freshUtxo }
 			myCount := uint64(0)
 			if bc != nil {
 				for _, t := range bc.Trophies {
@@ -2115,11 +2151,11 @@ func makeDashboardTab(w fyne.Window) fyne.CanvasObject {
 				}
 			}
 			realBal2 := 0.0
-			if mainWallet != nil && utxoSet != nil {
+			if utxoSet != nil {
 				realBal2 = utxoSet.GetTotalBalance(myAddr2)
 				bankAccount.SLK = realBal2
 			}
-			tMinedSat := int64(h) * int64(800000)
+			tMinedSat := int64(myCount) * int64(800000)
 			tRemSat   := int64(200000000000000000) - tMinedSat
 			_ = tRemSat
 
@@ -2127,11 +2163,12 @@ func makeDashboardTab(w fyne.Window) fyne.CanvasObject {
 				supplyLabel.SetText(fmt.Sprintf("%.8f SLK", realBal2))
 				diffValLabel.SetText(fmt.Sprintf("%s (%.0fm)", dl, d))
 				goldLabel.SetText(fmt.Sprintf("%.0fs gold target", g2))
-				heightValLabel.SetText(fmt.Sprintf("#%d (chain: #%d)", myCount, h))
+				heightValLabel.SetText(fmt.Sprintf("#%d", h))
+			trophyValLabel.SetText(fmt.Sprintf("#%d", myCount))
 				peersValLabel.SetText(fmt.Sprintf("%d peers", p))
-				tMsat := int64(h) * int64(800000)
-				rSat  := int64(200000000000000000) - tMsat
-				totalMinedLbl.SetText(fmt.Sprintf("%d.%08d SLK", tMsat/100000000, tMsat%100000000))
+				balSat := int64(realBal2 * 1e8)
+				rSat   := int64(200000000000000000) - balSat
+				totalMinedLbl.SetText(fmt.Sprintf("%d.%08d SLK", balSat/100000000, balSat%100000000))
 				reserveLbl.SetText(fmt.Sprintf("%d.%08d SLK", rSat/100000000, rSat%100000000))
 			})
 		}
