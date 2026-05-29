@@ -1104,9 +1104,9 @@ func startMining() {
 					for len(inputChan) > 0 { <-inputChan }
 					for len(cmdChan) > 0 { <-cmdChan }
 					raceNum++
-					continue
+					break
 				}
-				if finished { continue }
+				if finished { break }
 
 			time.Sleep(500 * time.Millisecond)
 		}
