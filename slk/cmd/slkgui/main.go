@@ -62,7 +62,7 @@ func addLog(msg string) {
 }
 
 func main() {
-	a := app.New()
+	a := app.NewWithID("io.slk.gui")
 	a.Settings().SetTheme(theme.DarkTheme())
 	w := a.NewWindow("SLK Mining Node")
 	w.Resize(fyne.NewSize(580, 800))

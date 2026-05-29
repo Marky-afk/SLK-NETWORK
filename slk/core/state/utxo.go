@@ -166,7 +166,6 @@ func LoadUTXOSet() *UTXOSet {
 	if u.UTXOs == nil {
 		u.UTXOs = make(map[string]*UTXO)
 	}
-	fmt.Printf("📊 Loaded UTXO set — %d outputs\n", len(u.UTXOs))
 	return &u
 }
 

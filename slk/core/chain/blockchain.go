@@ -29,7 +29,6 @@ func NewBlockchain() *Blockchain {
 		if bc.UTXOSet == nil {
 			bc.UTXOSet = state.NewUTXOSet()
 		}
-		fmt.Printf("📦 Loaded existing chain — %d trophies\n", len(bc.Trophies))
 		bc.RehashChain()
 		bc.SaveChain()
 		return bc

@@ -528,7 +528,7 @@ func main() {
 		fmt.Printf("💰 Real Balance (from UTXO): %.8f SLK\n", realBal)
 	}
 
-	a := app.New()
+	a := app.NewWithID("io.slk.bank")
 	a.Settings().SetTheme(theme.DarkTheme())
 	mainWin = a.NewWindow("SLK Bank — Decentralized Financial System")
 	mainWin.Resize(fyne.NewSize(1200, 750))
