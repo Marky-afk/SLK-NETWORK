@@ -468,6 +468,22 @@ func main() {
 
 	utxoSet    = state.LoadUTXOSet()
 	bc         = chain.NewBlockchain()
+	// Watch chain file — reload every 10s so slkbank stays in sync with slkd
+	go func() {
+		for {
+			time.Sleep(10 * time.Second)
+			fresh := chain.NewBlockchain()
+			if fresh != nil && fresh.Height > bc.Height {
+				bc = fresh
+				bc.ReconcileUTXOs()
+				utxoSet = bc.UTXOSet
+				if mainWallet != nil {
+					mainWallet.SyncBalance(utxoSet.GetTotalBalance(mainWallet.Address))
+				}
+				fyne.Do(func() { refreshLabels() })
+			}
+		}
+	}()
 	bankAccount = loadOrCreateBankAccount()
 	txHistory  = loadTxHistory()
 	marketList = loadMarket()
@@ -502,7 +518,9 @@ func main() {
 
 	if bankAccount.OwnerAddr != "" {
 		mainWallet, _ = wallet.LoadOrCreate(walletPath)
-		realBal := utxoSet.GetTotalBalance(mainWallet.Address)
+		bc.ReconcileUTXOs() // auto-fix missing UTXOs on startup
+	utxoSet = bc.UTXOSet  // use reconciled set
+	realBal := utxoSet.GetTotalBalance(mainWallet.Address)
 		mainWallet.SyncBalance(realBal)
 		// Sync bankAccount.SLK from UTXO on startup — single source of truth
 		bankAccount.SLK = realBal
@@ -9381,6 +9399,44 @@ func makeExplorerTab(w fyne.Window) fyne.CanvasObject {
 		mkStat2("⛏ Unique Miners", minersStat),
 	)
 
+	// Leaderboard
+	lbTitle := canvas.NewText("🏆 TOP MINERS", theme.ForegroundColor())
+	lbTitle.TextSize = 13
+	lbTitle.TextStyle = fyne.TextStyle{Bold: true}
+	lbBox := container.NewVBox(lbTitle)
+	rebuildLeaderboard := func() {
+		lbBox.Objects = []fyne.CanvasObject{lbTitle}
+		if bc == nil { return }
+		counts := make(map[string]int)
+		rewards := make(map[string]float64)
+		for _, t := range bc.Trophies {
+			if t.Header.Height == 0 { continue }
+			counts[t.Winner]++
+			rewards[t.Winner] += t.Reward
+		}
+		type entry struct { addr string; count int; reward float64 }
+		var entries []entry
+		for addr, c := range counts {
+			entries = append(entries, entry{addr, c, rewards[addr]})
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].count > entries[j].count })
+		medals := []string{"🥇","🥈","🥉"}
+		for i, e := range entries {
+			if i >= 10 { break }
+			medal := "  "
+			if i < 3 { medal = medals[i] }
+			name := e.addr
+			if len(name) > 20 { name = name[:20] }
+			isMe := mainWallet != nil && e.addr == mainWallet.Address
+			line := fmt.Sprintf("%s %-20s  %3d wins  %.4f SLK", medal, name, e.count, e.reward)
+			lbl := widget.NewLabel(line)
+			lbl.TextStyle = fyne.TextStyle{Monospace: true, Bold: isMe}
+			lbBox.Add(lbl)
+		}
+		lbBox.Refresh()
+	}
+	rebuildLeaderboard()
+
 	// Search bar
 	searchEntry := widget.NewEntry()
 	searchEntry.SetPlaceHolder("Search by address or trophy #...")
@@ -9451,10 +9507,14 @@ func makeExplorerTab(w fyne.Window) fyne.CanvasObject {
 			meMarker := "  "
 			if isMe { meMarker = "►" }
 
-			line := fmt.Sprintf("%s #%-4d  %-24s  %-8s  %.8f  %6.1fs  %.1fm",
+			tierEmoji := "🥉"
+			if tc.TierName() == "Gold"   { tierEmoji = "🥇" }
+			if tc.TierName() == "Silver" { tierEmoji = "🥈" }
+			line := fmt.Sprintf("%s #%-4d  %-24s  %s %-6s  %.8f  %6.1fs  %.1fm",
 				meMarker,
 				tc.Header.Height,
 				winner,
+				tierEmoji,
 				tc.TierName(),
 				tc.Reward,
 				tc.FinishTime,
@@ -9496,6 +9556,8 @@ func makeExplorerTab(w fyne.Window) fyne.CanvasObject {
 			container.NewCenter(title),
 			widget.NewSeparator(),
 			container.NewPadded(statsRow),
+			widget.NewSeparator(),
+			container.NewPadded(lbBox),
 			widget.NewSeparator(),
 			container.NewBorder(nil, nil, nil, refreshBtn, searchEntry),
 			widget.NewSeparator(),

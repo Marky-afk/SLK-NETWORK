@@ -171,3 +171,42 @@ func (bc *Blockchain) RehashChain() {
 		curr.Hash = curr.ComputeHash()
 	}
 }
+
+// ReconcileUTXOs rebuilds the UTXO set from the chain if counts don't match.
+// Runs on startup to fix any missing UTXOs without manual intervention.
+func (bc *Blockchain) ReconcileUTXOs() {
+	if bc.UTXOSet == nil {
+		bc.UTXOSet = state.NewUTXOSet()
+	}
+	realTrophies := 0
+	for _, t := range bc.Trophies {
+		if t.Winner != "GENESIS" && t.Reward > 0 {
+			realTrophies++
+		}
+	}
+	utxoCount := len(bc.UTXOSet.UTXOs)
+	if utxoCount >= realTrophies {
+		return // already in sync
+	}
+	fmt.Printf("⚠️  UTXO mismatch: %d UTXOs vs %d trophies — rebuilding...\n", utxoCount, realTrophies)
+	// Rebuild from chain
+	for _, t := range bc.Trophies {
+		if t.Winner == "GENESIS" || t.Reward == 0 {
+			continue
+		}
+		key := fmt.Sprintf("trophy:%d:%x", t.Header.Height, t.Hash[:8])
+		if _, exists := bc.UTXOSet.UTXOs[key]; exists {
+			continue // already have it
+		}
+		bc.UTXOSet.AddUTXO(&state.UTXO{
+			TxID:        key,
+			OutputIndex: 0,
+			Amount:      t.Reward,
+			Address:     t.Winner,
+			FromTrophy:  uint64(t.Header.Height),
+			Spent:       false,
+		})
+	}
+	bc.UTXOSet.Save()
+	fmt.Printf("✅ UTXO set rebuilt — %d entries\n", len(bc.UTXOSet.UTXOs))
+}

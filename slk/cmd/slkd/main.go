@@ -111,6 +111,7 @@ func main() {
 	mempool = state.NewMempool()
 
 	// ── CRITICAL: Balance comes from UTXO only, never from wallet file ──
+	bc.ReconcileUTXOs() // auto-fix missing UTXOs on startup
 	realBalance := bc.UTXOSet.GetTotalBalance(myWallet.Address)
 	myWallet.SyncBalance(realBalance)
 	myWallet.Save(walletPath)
