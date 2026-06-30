@@ -23,6 +23,7 @@ import (
 	"github.com/slkproject/slk/network/p2p"
 	"github.com/slkproject/slk/race/manager"
 	"github.com/slkproject/slk/wallet"
+	"encoding/hex"
 )
 
 // ── shared state updated by mining goroutine, read by UI ticker ──
@@ -128,6 +129,69 @@ func main() {
 		if p2pNode.PeerCount == 0 {
 			addLog("⚠️ No peers yet — still discovering...")
 		}
+		// ── Continuous chain sync — longest chain rule, same as Bitcoin ──
+		go func() {
+			for {
+				time.Sleep(10 * time.Second)
+				if p2pNode == nil || bc == nil { continue }
+				resp, err := p2pNode.SyncWithBestPeer(bc.Height)
+				if err != nil || resp == nil || resp.Height <= bc.Height { continue }
+				added := 0
+				for _, t := range resp.Trophies {
+					if t.Height <= bc.Height { continue }
+					if t.Height != bc.Height+1 { break }
+					if len(bc.Trophies) > 0 {
+						tip := bc.Trophies[len(bc.Trophies)-1]
+						if fmt.Sprintf("%x", tip.Hash) != t.PrevHash { break }
+					}
+					if t.VDFProof == "" || t.VDFInput == "" { break }
+					vdfOk := vdfmath.Verify(&vdfmath.Proof{
+						Input:      t.VDFInput,
+						Output:     t.VDFProof,
+						Iterations: uint64(t.Distance * 1000),
+					})
+					if !vdfOk {
+						addLog(fmt.Sprintf("⚠️ REJECTED trophy #%d — VDF INVALID", t.Height))
+						break
+					}
+					newT := trophy.NewTrophy(
+						hexToBytes(t.PrevHash),
+						t.Winner, t.Distance, t.Time,
+						trophy.Tier(t.Tier), t.Height,
+					)
+					newT.VDFProof = t.VDFProof
+					newT.VDFInput = t.VDFInput
+					bc.Trophies = append(bc.Trophies, newT)
+					bc.Height = t.Height
+					bc.TotalSupply -= newT.Reward
+					if t.Winner == myWallet.Address {
+						txID := fmt.Sprintf("%x", newT.Hash)
+						existing := bc.UTXOSet.GetUnspentForAddress(myWallet.Address)
+						alreadyHave := false
+						for _, u := range existing {
+							if u.TxID == txID { alreadyHave = true; break }
+						}
+						if !alreadyHave {
+							bc.UTXOSet.AddUTXO(&state.UTXO{
+								TxID: txID, OutputIndex: 0,
+								Amount: newT.Reward,
+								Address: myWallet.Address,
+								FromTrophy: t.Height,
+								Spent: false,
+							})
+						}
+					}
+					added++
+				}
+				if added > 0 {
+					bc.SaveChain()
+					bc.UTXOSet.Save()
+					myWallet.SyncBalance(bc.UTXOSet.GetTotalBalance(myWallet.Address))
+					setUI(func() { uiBalance = myWallet.Balance; uiTrophies = int(bc.Height) })
+					addLog(fmt.Sprintf("⛓ Chain synced: +%d trophies, now at height %d", added, bc.Height))
+				}
+			}
+		}()
 		p2pNode.OnTrophy = func(t p2p.TrophyMsg) {
 			if t.Winner != myWallet.Address {
 				addLog(fmt.Sprintf("📡 Trophy #%d from %s", t.Height, t.Winner[:12]))
@@ -171,7 +235,7 @@ func buildUI(w fyne.Window) fyne.CanvasObject {
 	trophLbl := widget.NewLabel("")
 	trophLbl.TextStyle = fyne.TextStyle{Bold: true}
 	addrLbl  := widget.NewLabel("📬 " + myWallet.Address)
-	addrLbl.Wrapping  = fyne.TextWrapWord
+	addrLbl.Wrapping  = fyne.TextTruncate
 	addrLbl.Alignment = fyne.TextAlignCenter
 	peersLbl := widget.NewLabel("")
 	peersLbl.TextStyle = fyne.TextStyle{Bold: true}
@@ -237,6 +301,11 @@ func buildUI(w fyne.Window) fyne.CanvasObject {
 
 	startBtn.OnTapped = func() {
 		if atomic.LoadInt32(&raceRunning) == 1 { return }
+		if p2pNode.PeerCount < 2 {
+			addLog(fmt.Sprintf("⚠️ Cannot mine — only %d peer(s) connected. Need 2+.", p2pNode.PeerCount))
+			setUI(func() { uiStatus = "⚠️ Need 2+ peers to mine" })
+			return
+		}
 		startBtn.Disable()
 		stopBtn.Enable()
 		go runMining(startBtn, stopBtn)
@@ -342,7 +411,7 @@ func buildUI(w fyne.Window) fyne.CanvasObject {
 	walletHdr.TextStyle = fyne.TextStyle{Bold: true}
 	walletHdr.Alignment = fyne.TextAlignCenter
 
-	return container.NewVBox(
+	return container.NewScroll(container.NewVBox(
 		container.NewCenter(title),
 		widget.NewSeparator(),
 
@@ -388,9 +457,13 @@ func buildUI(w fyne.Window) fyne.CanvasObject {
 
 		// Activity log
 		container.NewPadded(logScroll),
-	)
+	))
 }
 
+func hexToBytes(h string) []byte {
+	b, _ := hex.DecodeString(h)
+	return b
+}
 func activeRacerCount() int {
 	racersMu.Lock()
 	defer racersMu.Unlock()
@@ -416,6 +489,14 @@ func runMining(startBtn, stopBtn *widget.Button) {
 			atomic.StoreInt32(&raceRunning, 0)
 			return
 		default:
+		}
+
+		// Require at least 2 peers before mining
+		if p2pNode.PeerCount < 2 {
+			setUI(func() { uiStatus = "⚠️ Waiting for peers (need 2+)..." })
+			addLog(fmt.Sprintf("⚠️ Only %d peer(s) — need 2+ to mine", p2pNode.PeerCount))
+			time.Sleep(5 * time.Second)
+			continue
 		}
 
 		distance := bc.AdjustedDistance(activeRacerCount())

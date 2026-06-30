@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	vdfmath "github.com/slkproject/slk/race/math"
 	"strconv"
 	"time"
 	"io"
@@ -687,7 +688,7 @@ func startAPIServer() {
 		}
 		bal := utxoSet.GetTotalBalance(mainWallet.Address)
 		feeRate := float64(bankAccount.FeeBasisPoints) / 10000.0
-		if feeRate == 0 { feeRate = 0.05 } // default 5%
+		if feeRate == 0 { feeRate = 0.0 } // no fee
 		fee := req.Amount * feeRate
 		if bal < req.Amount + fee {
 			w.WriteHeader(400); json.NewEncoder(w).Encode(map[string]string{"error":"insufficient balance"}); return
@@ -1449,6 +1450,7 @@ func startP2P() {
 		// When we join the network, ask peers for any trophies we are missing.
 		// This is how a new node catches up to the real chain height.
 		go func() {
+			for {
 			time.Sleep(5 * time.Second) // give peers time to connect first
 			if p2pNode != nil && bc != nil {
 				resp, err := p2pNode.SyncWithBestPeer(bc.Height)
@@ -1463,6 +1465,20 @@ func startP2P() {
 						if len(bc.Trophies) > 0 {
 							tip := bc.Trophies[len(bc.Trophies)-1]
 							if fmt.Sprintf("%x", tip.Hash) != t.PrevHash { break }
+						}
+						// Verify VDF proof cryptographically — reject fake races
+						if t.VDFProof == "" || t.VDFInput == "" {
+							fmt.Printf("⚠️ REJECTED trophy #%d from %s — missing VDF proof\n", t.Height, t.Winner)
+							break
+						}
+						vdfOk := vdfmath.Verify(&vdfmath.Proof{
+							Input:      t.VDFInput,
+							Output:     t.VDFProof,
+							Iterations: uint64(t.Distance * 1000),
+						})
+						if !vdfOk {
+							fmt.Printf("⚠️ REJECTED trophy #%d from %s — VDF proof INVALID (FAKE RACE!)\n", t.Height, t.Winner)
+							break
 						}
 						newT := trophy.NewTrophy(
 							hexToBytes(t.PrevHash),
@@ -1507,6 +1523,8 @@ func startP2P() {
 						})
 					}
 				}
+			}
+			time.Sleep(15 * time.Second)
 			}
 		}()
 
@@ -1958,11 +1976,9 @@ func makeDashboardTab(w fyne.Window) fyne.CanvasObject {
 	card := func(t *canvas.Text, v *widget.Label) fyne.CanvasObject {
 		return container.NewPadded(container.NewVBox(t, v, widget.NewSeparator()))
 	}
-	feesT := canvas.NewText("Fees Earned", theme.PlaceHolderColor()); feesT.TextSize = 11
-	feesLabel := widget.NewLabel(fmt.Sprintf("%.8f SLK", bankAccount.FeesEarned)); feesLabel.TextStyle = fyne.TextStyle{Bold: true}
-	grid := container.New(layout.NewGridLayout(5),
+	grid := container.New(layout.NewGridLayout(4),
 		card(slkT, slkLabel), card(slktT, slktLabel),
-		card(slkcT, slkcLabel), card(walletT, walletBal), card(feesT, feesLabel))
+		card(slkcT, slkcLabel), card(walletT, walletBal))
 	rates := widget.NewLabel("📊  1 SLK = 1,000,000 SLKT   |   1 SLKT = 100,000 SLKCT   |   SLKCT = whole numbers")
 	rates.Alignment = fyne.TextAlignCenter
 
@@ -2610,7 +2626,7 @@ func makeBankTransferTab(w fyne.Window) fyne.CanvasObject {
 	result.TextStyle = fyne.TextStyle{Bold: true}
 
 	// Fee preview
-	feeLabel := widget.NewLabel("Transfer fee: calculated from your bank's basis points")
+	feeLabel := widget.NewLabel("")
 	feeLabel.TextStyle = fyne.TextStyle{Italic: true}
 
 	amountEntry.OnChanged = func(_ string) {
@@ -5158,7 +5174,7 @@ func makeBankOwnerDashboard(w fyne.Window) fyne.CanvasObject {
 		widget.NewLabel(fmt.Sprintf("📈 Total %s in Circulation: %.4f", cb.Currency, totalBalance)),
 		widget.NewLabel(fmt.Sprintf("💸 Total Withdrawn: %.8f SLK", totalWithdrawn)),
 		widget.NewLabel(fmt.Sprintf("🔒 Active Deposits: %d", activeDeposits)),
-		widget.NewLabel(fmt.Sprintf("💹 Fees Earned: %.8f SLK", cb.TotalFees)),
+		
 		widget.NewLabel(fmt.Sprintf("💹 Interest Rate: %.2f%% per year", cb.InterestRate)),
 	)
 
@@ -5746,7 +5762,7 @@ func showOwnerBankOverview(w fyne.Window, cb *CommercialBank) {
 	statsBox := container.NewVBox(
 		widget.NewLabel(fmt.Sprintf("👥 Clients: %d  |  Active Deposits: %d", totalClients, activeDeposits)),
 		widget.NewLabel(fmt.Sprintf("💰 Total Deposited: %.8f SLK  |  In Circulation: %.4f %s", cb.TotalDeposited, cb.TotalIssuedT, cb.Currency)),
-		widget.NewLabel(fmt.Sprintf("💹 Fees Earned: %.8f SLK  |  Interest Rate: %.2f%%/yr  |  Fee: %.2f%%", cb.TotalFees, cb.InterestRate, float64(cb.FeeBasisPoints)/100.0)),
+		widget.NewLabel(fmt.Sprintf("💹 Interest Rate: %.2f%%/yr", cb.InterestRate)),
 		widget.NewLabel(fmt.Sprintf("💱 Rate: 1 SLK = %.0f %s  |  Bank ID: %s", cb.SLKRate, cb.Currency, cb.ID[:16])),
 	)
 
@@ -5882,7 +5898,7 @@ func makeBankDirectoryTab(w fyne.Window) fyne.CanvasObject {
 				widget.NewLabel(fmt.Sprintf("💱 Currency: %s  |  Rate: 1 SLK = %.0f %s", cb.Currency, cb.SLKRate, cb.Currency)),
 				widget.NewLabel(feeR+"  |  "+ageR),
 				widget.NewLabel(trustR),
-				widget.NewLabel(fmt.Sprintf("💰 Fees Earned: %.8f SLK  |  Total Deposited: %.8f SLK", cb.TotalFees, cb.TotalDeposited)),
+				widget.NewLabel(fmt.Sprintf("💰 Total Deposited: %.8f SLK", cb.TotalDeposited)),
 				viewBtn,
 				widget.NewSeparator(),
 			)))
@@ -5895,7 +5911,7 @@ func makeBankDirectoryTab(w fyne.Window) fyne.CanvasObject {
 			box.Add(container.NewPadded(container.NewVBox(
 				nameLbl,
 				widget.NewLabel(fmt.Sprintf("💱 Currency: %s  |  Rate: 1 SLK = %.0f %s  |  Fee: %.2f%%", rb.Currency, rb.SLKRate, rb.Currency, float64(rb.FeeBasisPoints)/100.0)),
-				widget.NewLabel(fmt.Sprintf("🔒 SLK Locked: %.8f  |  Issued: %.8f  |  Fees: %.8f SLK", rb.LockedSLK, rb.IssuedAmount, rb.TotalFees)),
+				widget.NewLabel(fmt.Sprintf("🔒 SLK Locked: %.8f  |  Issued: %.8f", rb.LockedSLK, rb.IssuedAmount)),
 				widget.NewSeparator(),
 			)))
 		}
@@ -6083,7 +6099,7 @@ func makeMyBanksTab(w fyne.Window) fyne.CanvasObject {
 		// ── DASHBOARD ──
 		dashTitle := canvas.NewText("📊 Dashboard", theme.ForegroundColor())
 		dashTitle.TextStyle = fyne.TextStyle{Bold: true}
-		feeLbl    := widget.NewLabel(fmt.Sprintf("💰 Total Fees Earned: %.8f SLK", cb.TotalFees))
+		feeLbl    := widget.NewLabel("")
 		clientLbl := widget.NewLabel(fmt.Sprintf("👥 Total Clients: %d", len(cb.Clients)))
 		shareLbl  := widget.NewLabel(fmt.Sprintf("📈 Total Shares: %d", totalShares))
 		depLbl    := widget.NewLabel(fmt.Sprintf("🏦 Total Deposited: %.8f %s", cb.TotalDeposited, cb.Currency))
@@ -6291,7 +6307,7 @@ func makeMyBanksTab(w fyne.Window) fyne.CanvasObject {
 		lockedLbl  := widget.NewLabel(fmt.Sprintf("🔒 SLK Locked as Reserve: %.8f SLK", rb.LockedSLK))
 		issuedLbl  := widget.NewLabel(fmt.Sprintf("💵 %s Issued: %.8f", rb.Currency, rb.IssuedAmount))
 		ratioLbl   := widget.NewLabel(fmt.Sprintf("📊 Reserve Ratio: %.2f%% (healthy = above 100%%)", reserveRatio))
-		feeLbl2    := widget.NewLabel(fmt.Sprintf("💰 Total Fees Earned: %.8f SLK", rb.TotalFees))
+		feeLbl2    := widget.NewLabel("")
 		clientLbl2 := widget.NewLabel(fmt.Sprintf("👥 Member Banks: %d", len(rb.Clients)))
 		rateLbl2   := widget.NewLabel(fmt.Sprintf("💹 Base Interest Rate: %.2f%%", rb.InterestRate))
 
@@ -6566,35 +6582,33 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 		)))
 	}
 
-	warningLbl := canvas.NewText("WARNING: Bank type and fee rate are PERMANENT and can NEVER be changed.", color.NRGBA{R:255,G:80,B:80,A:255})
-	warningLbl.TextSize = 11
-	typeSel := widget.NewSelect([]string{
-		"🏢 Commercial Bank — earns fees from transactions",
+		typeSel := widget.NewSelect([]string{
+		"🏢 Commercial Bank — stores SLK, issues currency",
 		"🏛 Reserve Bank — locks SLK, issues custom currency",
 	}, nil)
-	typeSel.SetSelected("🏢 Commercial Bank — earns fees from transactions")
-	typeDesc := widget.NewLabel("Earn a fee on every transaction. Fee is set ONCE and locked FOREVER. Get an API key to connect your website.")
+	typeSel.SetSelected("🏢 Commercial Bank — stores SLK, issues currency")
+	typeDesc := widget.NewLabel("Store SLK and issue your own currency. Get an API key to connect your website.")
 	typeDesc.Wrapping = fyne.TextWrapWord
 	nameEntry := widget.NewEntry(); nameEntry.SetPlaceHolder("Bank name (e.g. SLKafrica)")
 	currEntry := widget.NewEntry(); currEntry.SetPlaceHolder("Currency ticker (e.g. SLKA — no spaces)")
-	feeEntry  := widget.NewEntry(); feeEntry.SetPlaceHolder("Fee % (e.g. 0.5) — PERMANENT FOREVER")
 	rateEntry := widget.NewEntry(); rateEntry.SetPlaceHolder("SLK Rate: T per 1 SLK (e.g. 10000) — PERMANENT")
 	lockEntry := widget.NewEntry(); lockEntry.SetPlaceHolder("SLK to lock as reserve (Reserve Bank only)")
 	webEntry  := widget.NewEntry(); webEntry.SetPlaceHolder("Your website (e.g. https://mybank.com)")
+	feeEntry  := widget.NewEntry()
 	reserveInfo := widget.NewLabel("")
 	reserveInfo.Wrapping = fyne.TextWrapWord
 	reserveInfo.Hide()
 	lockEntry.Hide()
 	typeSel.OnChanged = func(s string) {
 		if strings.Contains(s, "Reserve") {
-			typeDesc.SetText("Lock real SLK as gold backing → print custom currency. More SLK locked = more you can print. Users convert back to SLK anytime. Currency value = locked SLK / total issued. Fee is PERMANENT.")
+			typeDesc.SetText("Lock real SLK as gold backing → print custom currency. More SLK locked = more you can print. Users convert back to SLK anytime.")
 			lockEntry.Show()
 			vaultSLK := 0.0
 			if bankVaultWallet != nil { vaultSLK = utxoSet.GetTotalBalance(bankVaultWallet.Address) }
 			reserveInfo.SetText(fmt.Sprintf("🏦 Your available SLK: %.8f | Vault SLK: %.8f\n⚠ Locked SLK cannot be withdrawn — only earned back via user conversions.", bankAccount.SLK, vaultSLK))
 			reserveInfo.Show()
 		} else {
-			typeDesc.SetText("Earn a fee on every transaction. Fee is set ONCE and locked FOREVER. Get an API key to connect your website.")
+			typeDesc.SetText("Store SLK and issue your own currency. Get an API key to connect your website.")
 			lockEntry.Hide()
 			reserveInfo.Hide()
 		}
@@ -6615,7 +6629,7 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 	createBtn := widget.NewButton("🏦 CREATE BANK — PERMANENT, CANNOT BE UNDONE", func() {
 		name    := strings.TrimSpace(nameEntry.Text)
 		curr    := strings.TrimSpace(currEntry.Text)
-		feeStr  := strings.TrimSpace(feeEntry.Text)
+		_ = feeEntry
 		rateStr := strings.TrimSpace(rateEntry.Text)
 		if name == "" { result.SetText("❌ Enter bank name"); return }
 		if curr == "" { result.SetText("❌ Enter currency ticker"); return }
@@ -6653,15 +6667,14 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 				return
 			}
 		}
-		feePercent, err := strconv.ParseFloat(feeStr, 64)
-		if err != nil || feePercent < 0 || feePercent > 10 { result.SetText("❌ Fee must be 0-10%"); return }
+		feePercent := 0.0; _ = feePercent
 		slkRate, rerr := strconv.ParseFloat(rateStr, 64)
 		if rerr != nil || slkRate <= 0 { result.SetText("❌ Enter valid SLK rate (e.g. 10000)"); return }
-		feeBP  := int64(feePercent * 100)
+		feeBP  := int64(0) // fees disabled
 		bType  := typeSel.Selected
 		_ = curr + "C"
 		dialog.ShowConfirm("PERMANENT — Cannot Be Changed Ever",
-			fmt.Sprintf("Bank: %s | Currency: %s | Fee: %.2f%% | 1 SLK = %.0f %s | CANNOT be changed. Sure?", name, curr, feePercent, slkRate, curr),
+			fmt.Sprintf("Bank: %s | Currency: %s | 1 SLK = %.0f %s | Confirm creation?", name, curr, slkRate, curr),
 			func(confirmed bool) {
 				if !confirmed { return }
 				bankID := fmt.Sprintf("bank_%x", time.Now().UnixNano())
@@ -6699,7 +6712,7 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 						FeeBasisPoints: feeBP, CreatedAt: time.Now().Unix(), APIKey: apiKey})
 					saveReserveBanks()
 					dialog.ShowInformation("🏛 Reserve Bank Created!",
-						fmt.Sprintf("Bank: %s\nCurrency: %s\n1 SLK = %.0f %s\nLocked: %.8f SLK (PERMANENT)\nInitial Supply: %.0f %s\nFee: %.2f%%\nAPI Key: %s\n\n⚠ SLK is locked as gold backing.\nUsers can always convert %s back to real SLK.", name, curr, slkRate, curr, lockAmt, initialSupply, curr, feePercent, apiKey, curr), w)
+						fmt.Sprintf("Bank: %s\nCurrency: %s\n1 SLK = %.0f %s\nLocked: %.8f SLK\nInitial Supply: %.0f %s\nAPI Key: %s\n\n⚠ SLK is locked as gold backing.\nUsers can always convert %s back to real SLK.", name, curr, slkRate, curr, lockAmt, initialSupply, curr, apiKey, curr), w)
 					result.SetText(fmt.Sprintf("✅ Reserve Bank %s created! %.0f %s issued.", name, initialSupply, curr))
 					nameEntry.SetText(""); currEntry.SetText(""); feeEntry.SetText("")
 					rateEntry.SetText(""); lockEntry.SetText("")
@@ -6710,7 +6723,7 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 						CreatedAt: time.Now().Unix(), APIKey: apiKey})
 					saveCommercialBanks()
 					dialog.ShowInformation("🏢 Commercial Bank Created!",
-						fmt.Sprintf("Bank: %s | Currency: %s | 1SLK=%.0f%s | Fee:%.2f%% PERMANENT | API Key: %s", name, curr, slkRate, curr, feePercent, apiKey), w)
+						fmt.Sprintf("Bank: %s | Currency: %s | 1SLK=%.0f%s | API Key: %s", name, curr, slkRate, curr, apiKey), w)
 					result.SetText(fmt.Sprintf("✅ Commercial Bank %s created!", name))
 					nameEntry.SetText(""); currEntry.SetText(""); feeEntry.SetText(""); rateEntry.SetText("")
 				}
@@ -6720,13 +6733,11 @@ func makeCreateBankTab(w fyne.Window) fyne.CanvasObject {
 	_ = webEntry
 	return container.NewVScroll(container.NewPadded(container.NewVBox(
 		container.NewCenter(title), widget.NewSeparator(),
-		container.NewPadded(warningLbl), widget.NewSeparator(),
 		widget.NewForm(widget.NewFormItem("Bank Type", typeSel)),
 		container.NewPadded(typeDesc), widget.NewSeparator(),
 		widget.NewForm(
 			widget.NewFormItem("Bank Name", nameEntry),
 			widget.NewFormItem("Currency Ticker", currEntry),
-			widget.NewFormItem("Fee Rate %", feeEntry),
 			widget.NewFormItem("SLK Rate", rateEntry),
 			widget.NewFormItem("Lock SLK (Reserve only)", lockEntry),
 		),
