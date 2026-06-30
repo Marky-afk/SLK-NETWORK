@@ -1,2 +1,4 @@
 .aider*
 slk/build/
+slk/cmd/slkbank/slkbank
+slk/cmd/slkgui/slkgui
